@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { newGame, addPlayer, applyAction, finishIfDue, viewFor, type Action } from '../lib/game.ts';
-import { joinRoom, promoteQueued, setQueued, syncSpectators, assignConnectedHost } from '../lib/membership.ts';
+import { joinRoom, promoteQueued, setQueued, switchToSpectating, syncSpectators, assignConnectedHost } from '../lib/membership.ts';
 
 function table() {
   const g = newGame('AB12', 'a', 'Alex', 1000);
@@ -87,4 +87,42 @@ test('names are unique across seats and watchers; spectator membership is capped
   assert.throws(() => joinRoom(g, 'x', 'alex'), /taken/);
   for (let i = 0; i < 19; i++) joinRoom(g, `w${i}`, `Watcher ${i}`);
   assert.throws(() => joinRoom(g, 'extra', 'Extra'), /full/);
+});
+
+test('switching seats preserves completed results, promotes the queue, resets readiness and transfers host', () => {
+  const g = table();
+  assert.throws(() => switchToSpectating(g, 'a'), /between games/);
+  applyAction(g, 'a', { type: 'end-game' }, 1000); finishIfDue(g, 6000);
+  const before = viewFor(g, 'a').results, session = structuredClone(g.session), winners = [...g.winners];
+  g.players.forEach(p => p.ready = true);
+  switchToSpectating(g, 'a', 7000);
+  assert.deepEqual(promoteQueued(g, ['a', 'b', 's']), ['s']);
+  assignConnectedHost(g, ['a', 'b', 's']);
+  assert.equal(g.hostId, 'b'); assert.equal(viewFor(g, 'a').yourRole, 'spectator');
+  assert.equal(g.spectators?.find(p => p.id === 'a')?.queuedAt, null);
+  assert.deepEqual(g.players.map(p => p.id), ['b', 's']);
+  assert.ok(g.players.every(p => !p.ready));
+  assert.deepEqual(viewFor(g, 'a').results, before); assert.deepEqual(g.session, session); assert.deepEqual(g.winners, winners);
+  assert.throws(() => applyAction(g, 'a', { type: 'end-game' }), /seat/);
+  assert.throws(() => switchToSpectating(g, 'a'), /Only seated/);
+  setQueued(g, 'a', true, 8000); promoteQueued(g, ['a', 'b', 's']);
+  assert.equal(viewFor(g, 'a').yourRole, 'player');
+  assert.equal(viewFor(g, 'a').players.find(p => p.id === 'a')?.score, before.find(p => p.id === 'a')?.score);
+});
+test('all players can watch; the room can refill and regain a seated host', () => {
+  const g = newGame('AB12', 'a', 'Alex');
+  switchToSpectating(g, 'a'); assignConnectedHost(g, ['a']);
+  assert.equal(g.hostId, ''); assert.equal(viewFor(g, 'a').players.length, 0);
+  joinRoom(g, 'b', 'Blake'); assignConnectedHost(g, ['a', 'b']);
+  assert.equal(g.hostId, 'b');
+  setQueued(g, 'a', true); promoteQueued(g, ['a', 'b']);
+  assert.equal(g.players.length, 2);
+});
+test('legacy results are snapshotted before a player moves to watching', () => {
+  const g = table(); applyAction(g, 'a', { type: 'end-game' }, 1000); finishIfDue(g, 6000);
+  delete g.resultPlayers;
+  const scores = viewFor(g, 'a').results;
+  switchToSpectating(g, 'a');
+  assert.deepEqual(viewFor(JSON.parse(JSON.stringify(g)), 'a').results, scores);
+  assert.equal(viewFor(g, 'a').results.length, 2);
 });

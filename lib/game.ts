@@ -21,6 +21,7 @@ export type Power = {
 export type Game = {
   spectators?: Spectator[];
   resultPlayerIds?: string[];
+  resultPlayers?: Player[];
   resultWinners?: { id: string; name: string }[];
   disconnectedAt?: Record<string, number>;
   session?: { games: number; players: Record<string, SessionScore> };
@@ -47,6 +48,7 @@ export type Action =
   | { type: 'give'; slot: number }
   | { type: 'remove'; playerId: string }
   | { type: 'recover-player'; playerId: string }
+  | { type: 'spectate' }
   | { type: 'queue-seat'; queued: boolean }
   | { type: 'set-queen-rule'; rule: QueenRule };
 
@@ -110,7 +112,7 @@ function begin(game: Game): void {
   game.drawn = null; game.power = null; game.turnComplete = false;
   game.opportunity = null; game.transfer = null; game.calledBy = null;
   game.finalTurns = null; game.exhausted = false; game.deadline = null;
-  game.winners = []; game.resultWinners = []; game.resultPlayerIds = []; game.flash = null; game.lastSwap = null; game.motions = []; game.gameNumber++;
+  game.winners = []; game.resultWinners = []; game.resultPlayerIds = []; game.resultPlayers = []; game.flash = null; game.lastSwap = null; game.motions = []; game.gameNumber++;
   game.message = 'Look at your bottom two cards. Hide them when you are ready.';
 }
 function publishDiscard(game: Game, card: Card): void {
@@ -153,6 +155,7 @@ export function finishIfDue(game: Game, now = Date.now()): boolean {
   if (game.phase !== 'ending' || game.deadline === null || now < game.deadline || game.transfer) return false;
   game.phase = 'finished';
   game.resultPlayerIds = game.players.map(p => p.id);
+  game.resultPlayers = structuredClone(game.players);
   const lowest = Math.min(...game.players.map(score));
   game.winners = game.players.filter(p => score(p) === lowest).map(p => p.id);
   game.resultWinners = game.players.filter(p => game.winners.includes(p.id)).map(p => ({ id: p.id, name: p.name }));
@@ -410,14 +413,14 @@ export function viewFor(game: Game, id: string, now = Date.now()) {
       id: p.id, name: p.name, ready: p.ready, initial: p.initial,
       initialCards: p.id === id ? p.initialCards ?? [p.initial, p.initial] : null,
       count: p.hand.filter(Boolean).length,
-      score: game.phase === 'finished' && (!game.resultPlayerIds || game.resultPlayerIds.includes(p.id)) ? score(p) : null,
+      score: game.phase === 'finished' && (!game.resultPlayerIds || game.resultPlayerIds.includes(p.id)) ? score(game.resultPlayers?.find(result => result.id === p.id) ?? p) : null,
       hand: p.hand.map((card, slot) => {
         if (!card) return null;
         const initial = game.phase === 'peek' && (slot === 2 || slot === 3) && (p.initialCards?.[slot - 2] ?? p.initial) === 'viewing';
         const powerPeek = game.power?.reveals.some(r => r.target.playerId === p.id && r.target.slot === slot && r.card.rank === card.rank && r.card.suit === card.suit) ?? false;
         const peeking = isActive && powerPeek;
         // Publish only who is looking at this position. Card faces stay private.
-        const peekedBy = initial ? p.id : powerPeek ? game.players[game.active].id : null;
+        const peekedBy = initial ? p.id : powerPeek ? game.players[game.active]?.id ?? null : null;
         const flash = game.flash && game.flash.until > now && game.flash.target.playerId === p.id && game.flash.target.slot === slot && game.flash.card.rank === card.rank && game.flash.card.suit === card.suit;
         // Power reveals are separate snapshots: target movements cannot silently reveal a new card.
         return { face: game.phase === 'finished' || (initial && p.id === id) || flash || peeking ? card : null, peeking, peekedBy };
@@ -427,6 +430,10 @@ export function viewFor(game: Game, id: string, now = Date.now()) {
     opportunity: game.opportunity, calledBy: game.calledBy,
     finalTurns: game.finalTurns, deadline: game.deadline,
     winners: game.winners, message: game.message,
+    results: game.phase === 'finished' ? (game.resultPlayers ?? game.players.filter(p => !game.resultPlayerIds || game.resultPlayerIds.includes(p.id))).map(p => ({
+      id: p.id, name: p.name, score: score(p), hand: p.hand.map(card => card ? { face: card } : null),
+      ready: game.players.find(seat => seat.id === p.id)?.ready ?? false,
+    })) : [],
     resultWinners: game.resultWinners?.length ? game.resultWinners : game.winners.map(id => ({ id, name: game.players.find(p => p.id === id)?.name ?? game.session?.players[id]?.name ?? 'The winner' })),
     drawn: isActive ? game.drawn : null, hasDrawn: !!game.drawn,
     power: power ? { rank: power.rank, step: power.step, reveals: power.reveals,

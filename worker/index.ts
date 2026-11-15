@@ -1,5 +1,5 @@
 import { DISCONNECT_GRACE_MS, applyAction, finishIfDue, newGame, syncPresence, viewFor, type Action, type Game } from '../lib/game.ts';
-import { assignConnectedHost, joinRoom, promoteQueued, setQueued, syncSpectators } from '../lib/membership.ts';
+import { assignConnectedHost, joinRoom, promoteQueued, setQueued, switchToSpectating, syncSpectators } from '../lib/membership.ts';
 import { createRoomCode, validRoomCode } from '../lib/room-code.ts';
 
 interface Env { ROOMS: DurableObjectNamespace; ALLOWED_ORIGINS: string }
@@ -215,7 +215,8 @@ export class GameRoom {
           if (['peek', 'swap', 'replace', 'give'].includes(action.type) && payload.version !== stored.game.version) throw new Error('The table changed. Please select the card again.');
           // Changes happen on a clone: a rejected command cannot partially mutate live state.
           const next = structuredClone(stored);
-          if (action.type === 'queue-seat') setQueued(next.game, a.playerId, action.queued, now);
+          if (action.type === 'spectate') switchToSpectating(next.game, a.playerId, now);
+          else if (action.type === 'queue-seat') setQueued(next.game, a.playerId, action.queued, now);
           else applyAction(next.game, a.playerId, action, now);
           if (action.type === 'remove') { delete next.credentials[action.playerId]; delete next.handled[action.playerId]; }
           next.handled[a.playerId] = [...handled, payload.id].slice(-128);

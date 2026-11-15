@@ -16,6 +16,24 @@ export function joinRoom(game: Game, id: string, name: string, now = Date.now())
   }
 }
 
+export function switchToSpectating(game: Game, id: string, now = Date.now()) {
+  if (!betweenGames(game)) throw new Error('You can switch to spectating only between games.');
+  const player = game.players.find(p => p.id === id);
+  if (!player) throw new Error('Only seated players can switch to spectating.');
+  if ((game.spectators?.length ?? 0) >= 20) throw new Error('The spectator area is full. Try again later.');
+  if (game.phase === 'finished') {
+    game.resultPlayerIds ??= game.players.map(p => p.id);
+    game.resultPlayers ??= structuredClone(game.players.filter(p => game.resultPlayerIds!.includes(p.id)));
+  }
+  game.players = game.players.filter(p => p.id !== id);
+  game.spectators ??= [];
+  game.spectators.push({ id, name: player.name, queuedAt: null });
+  for (const p of game.players) p.ready = false;
+  if (game.disconnectedAt) delete game.disconnectedAt[id];
+  game.updatedAt = now;
+  game.version++;
+}
+
 export function setQueued(game: Game, id: string, queued: boolean, now = Date.now()) {
   const spectator = game.spectators?.find(s => s.id === id);
   if (!spectator) throw new Error('Only spectators can join or leave the waiting list.');
@@ -53,8 +71,8 @@ export function syncSpectators(game: Game, connectedIds: string[], now = Date.no
 }
 
 export function assignConnectedHost(game: Game, connectedIds: string[]) {
-  if (!connectedIds.includes(game.hostId)) {
-    const replacement = game.players.find(p => connectedIds.includes(p.id));
-    if (replacement) game.hostId = replacement.id;
+  if (!game.players.some(p => p.id === game.hostId) || !connectedIds.includes(game.hostId)) {
+    const replacement = game.players.find(p => connectedIds.includes(p.id)) ?? game.players[0];
+    game.hostId = replacement?.id ?? '';
   }
 }
