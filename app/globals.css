@@ -340,3 +340,16 @@ kbd { font-family: inherit; font-size: 10px; font-weight: 500; line-height: 1; p
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   .dealing .player-hand .playing-card { opacity: 1; transform: none; }.shuffle-indicator { display: none; }
 }
+
+.spectator-panel { display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+.lobby-main > .spectator-panel, .results > .spectator-panel { margin: 20px 0; }
+.spectator-panel:empty { display: none; }
+.spectator-panel details { text-align: left; max-width: 100%; }
+.spectator-panel summary { cursor: pointer; padding: 6px 0; }
+.spectator-panel ul { width: 230px; max-width: 100%; max-height: 150px; overflow: auto; margin: 6px 0; padding: 12px; list-style: none; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); box-shadow: 0 8px 24px #0002; }
+.spectator-panel li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 0; overflow-wrap: anywhere; }
+.spectator-panel li small { color: var(--muted); white-space: nowrap; }
+.card-table .spectator-panel { color: var(--table-muted); }
+.next-game-seats { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 20px; margin: 20px 0; color: var(--muted); font-size: 13px; }
+.next-game-seats > span:first-child { font-weight: 600; }
+.next-game-seats button { margin-left: 10px; }

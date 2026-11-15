@@ -115,6 +115,11 @@ export default function Home() {
   const [buildClock, setBuildClock] = useState(0);
   const [serverHealth, setServerHealth] = useState<'connecting' | 'connected' | 'failed'>('connecting');
   const [presenceNotice, setPresenceNotice] = useState('');
+  const previousRole = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (previousRole.current === 'spectator' && state?.yourRole === 'player') setPresenceNotice('You have a seat · ready up for the next game');
+    previousRole.current = state?.yourRole;
+  }, [state?.yourRole]);
   const previousPresence = useRef<{ code: string; connected: string[]; players: string[]; seen: string[] } | null>(null);
   const [roomModal, setRoomModal] = useState<'join' | 'browse' | 'invite' | null>(null);
   const [listedRooms, setListedRooms] = useState<ListedRoom[]>([]);
@@ -331,7 +336,7 @@ export default function Home() {
     function keys(event: KeyboardEvent) {
       if (event.ctrlKey || event.metaKey || event.altKey || event.repeat || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || rules) return;
       if (event.key === 'Escape') { setMatching(false); setSelected(null); }
-      if (event.key.toLowerCase() === 'm' && latest.current && ['playing', 'ending'].includes(latest.current.phase)) { setMatching(m => !m); setSelected(null); }
+      if (event.key.toLowerCase() === 'm' && latest.current && latest.current.yourRole !== 'spectator' && ['playing', 'ending'].includes(latest.current.phase)) { setMatching(m => !m); setSelected(null); }
     }
     window.addEventListener('keydown', keys);
     return () => window.removeEventListener('keydown', keys);
@@ -366,12 +371,15 @@ export default function Home() {
   }
 
   const me = state?.players.find(p => p.id === seat?.playerId);
+  const spectating = state?.yourRole === 'spectator';
+  const watcher = state?.spectators?.find(p => p.id === seat?.playerId);
+  const perspective = me ?? state?.players[0];
   const active = state?.players.find(p => p.id === state.activeId);
   const isTurn = !!state && state.activeId === me?.id;
   const online = connection === 'connected';
   const locked = me?.id === state?.calledBy;
   const countdown = state?.deadline ? Math.max(0, Math.ceil((state.deadline - clock - serverOffset.current) / 1000)) : null;
-  const canMatch = !!state && !locked && !state.transfer && state.opportunity?.open && (state.phase === 'playing' || (state.phase === 'ending' && (countdown ?? 0) > 0));
+  const canMatch = !!state && !!me && !locked && !state.transfer && state.opportunity?.open && (state.phase === 'playing' || (state.phase === 'ending' && (countdown ?? 0) > 0));
   const transferMine = !!state?.transfer && state.transfer.from === me?.id;
   const canDiscardDrawn = !!state && isTurn && state.phase === 'playing' && !!state.drawn && !state.transfer && online && !pending;
   function discardDrawn() {
@@ -408,6 +416,7 @@ export default function Home() {
     return state.power?.step === 'swap' && playerId !== state.calledBy;
   }
   function prompt(): { title: string; detail: string } {
+    if (state && spectating) return { title: state.phase === 'peek' ? 'Opening look' : state.phase === 'ending' ? 'Final matches' : `${active?.name}’s turn`, detail: 'Watching the table · private cards stay hidden.' };
     if (!state || !me) return { title: 'Connecting to your table…', detail: 'Your seat will be ready in a moment.' };
     if (!online) return { title: connection === 'closed' ? 'Connection closed' : 'Reconnecting…', detail: 'Your seat and game are saved.' };
     if (transferMine) return { title: 'Choose a card to give', detail: `Select any of your cards to fill ${state.players.find(p => p.id === state.transfer!.to.playerId)?.name}’s empty spot.` };
@@ -464,6 +473,16 @@ export default function Home() {
     </fieldset>;
   }
 
+  function spectatorsPanel() {
+    if (!state) return null;
+    const spectators = state.spectators ?? [];
+    const queue = spectators.filter(s => s.queued);
+    return <div className="spectator-panel">
+      {spectating && <><span>{watcher?.queued ? `Watching · next-game queue #${queue.findIndex(s => s.id === seat?.playerId) + 1}` : 'Just watching'}</span><button className="text-button" disabled={!online || pending} onClick={() => send({ type: 'queue-seat', queued: !watcher?.queued })}>{watcher?.queued ? 'Just watch' : 'Join next game'}</button></>}
+      {spectators.length > 0 && <details><summary>{spectators.length} watching</summary><ul>{spectators.map(s => <li key={s.id}>{s.name}{s.id === seat?.playerId ? ' (you)' : ''}<small>{!state.connectedIds.includes(s.id) ? 'reconnecting' : s.queued ? 'next game' : 'watching'}</small></li>)}</ul></details>}
+    </div>;
+  }
+
   function sessionScoreboard() {
     if (!state?.session?.games) return null;
     const players = [...state.session.players].sort((a, b) => b.wins - a.wins || b.ties - a.ties || a.points - b.points || a.name.localeCompare(b.name));
@@ -476,9 +495,10 @@ export default function Home() {
   }
 
   function hand(player: NonNullable<GameView['players'][number]>, own: boolean, seatIndex: number) {
+    const mine = player.id === me?.id;
     const isActive = state?.activeId === player.id && state?.phase === 'playing';
     const protectedHand = state?.calledBy === player.id;
-    const opponents = state!.players.filter(p => p.id !== me?.id);
+    const opponents = state!.players.filter(p => p.id !== perspective?.id);
     const arcIndex = opponents.findIndex(p => p.id === player.id);
     const seat = layout.seats[arcIndex];
     const cardWidth = own ? layout.ownWidth : layout.cardWidth, cardHeight = own ? layout.ownHeight : layout.cardHeight;
@@ -486,10 +506,10 @@ export default function Home() {
     const columns = handColumns(player.hand.length);
     const arcStyle = { '--hand-columns': columns, '--hand-card-width': `${cardWidth}px`, '--hand-card-height': `${cardHeight}px`, '--hand-header-width': `${Math.min(180, cap + 20)}px`, ...(!own && seat ? { left: seat.x, top: seat.y, '--hand-tilt': `${seat.tilt}deg` } : {}) } as CSSProperties;
     const disconnected = !state?.connectedIds.includes(player.id);
-    return <section key={player.id} style={arcStyle} className={`player-hand ${own ? 'own-hand' : 'opponent-hand'} ${isActive ? 'active-hand' : ''} ${protectedHand ? 'locked-hand' : ''} ${disconnected ? 'disconnected-hand' : ''}`} aria-label={`${player.name}${own ? ', your hand' : '’s hand'}${isActive ? ', current turn' : ''}${disconnected ? ', disconnected' : ''}`}>
+    return <section key={player.id} style={arcStyle} className={`player-hand ${own ? 'own-hand' : 'opponent-hand'} ${isActive ? 'active-hand' : ''} ${protectedHand ? 'locked-hand' : ''} ${disconnected ? 'disconnected-hand' : ''}`} aria-label={`${player.name}${mine ? ', your hand' : '’s hand'}${isActive ? ', current turn' : ''}${disconnected ? ', disconnected' : ''}`}>
       <div className="player-heading">
         <span className={`player-avatar avatar-${seatIndex % 5}`}>{player.name.slice(0, 1).toUpperCase()}</span>
-        <span className="player-identity"><strong title={player.name}>{player.name}{own && <small>you</small>}</strong><span>{disconnected ? 'Disconnected' : protectedHand ? <><Icon name="lock" size={11}/> Cambio</> : isActive ? own ? 'Your turn' : 'Their turn' : `${player.count} ${player.count === 1 ? 'card' : 'cards'}`}</span></span>
+        <span className="player-identity"><strong title={player.name}>{player.name}{mine && <small>you</small>}</strong><span>{disconnected ? 'Disconnected' : protectedHand ? <><Icon name="lock" size={11}/> Cambio</> : isActive ? mine ? 'Your turn' : 'Their turn' : `${player.count} ${player.count === 1 ? 'card' : 'cards'}`}</span></span>
         {isActive && <span className="turn-dot" aria-label="Current turn"/>}
       </div>
       <HandFrame slots={player.hand.length} cardWidth={cardWidth} gap={own ? 8 : 7} cap={cap} own={own}>
@@ -497,7 +517,7 @@ export default function Home() {
           const target = { playerId: player.id, slot: index };
           const face = online || state?.phase === 'finished' ? slot?.face : null;
           const peekedBy = online && slot?.peekedBy ? state?.players.find(p => p.id === slot.peekedBy)?.name : undefined;
-          return <PlayingCard key={index} slotKey={`${player.id}:${index}`} face={face} empty={!slot} small={!own} opposite={!own} onClick={() => selectCard(target)} disabled={!selectable(player.id, index)} selected={same(selected, target)} highlight={!!slot && selectable(player.id, index)} peekedBy={peekedBy} position={index} index={seatIndex * 3 + index} label={!slot ? `Empty card position ${index + 1}` : `${own ? 'Your' : player.name + '’s'} card ${index + 1}, ${face ? cardLabel(face) : 'face down'}`}/>;
+          return <PlayingCard key={index} slotKey={`${player.id}:${index}`} face={face} empty={!slot} small={!own} opposite={!own} onClick={() => selectCard(target)} disabled={!selectable(player.id, index)} selected={same(selected, target)} highlight={!!slot && selectable(player.id, index)} peekedBy={peekedBy} position={index} index={seatIndex * 3 + index} label={!slot ? `Empty card position ${index + 1}` : `${mine ? 'Your' : player.name + '’s'} card ${index + 1}, ${face ? cardLabel(face) : 'face down'}`}/>;
         })}
         {player.count === 0 && <span className="empty-hand-note">No cards · still in play</span>}
       </HandFrame>
@@ -534,13 +554,13 @@ export default function Home() {
           <button className="invite-box" onClick={copyInvite}><span><small>ROOM CODE</small><strong>{formatCode(state.code)}</strong></span><span className="invite-action"><Icon name={copied ? 'check' : 'copy'}/>{copied ? 'Copied link' : 'Copy invite'}</span></button>
           {queenSettings()}
           <div className="lobby-players"><div className="list-heading"><span>At the table</span><span>{state.players.length} / 10</span></div>{state.players.map((p, i) => <div className="lobby-player" key={p.id}><span className={`player-avatar avatar-${i % 5}`}>{p.name[0].toUpperCase()}</span><span className="lobby-player-name">{p.name}{p.id === me?.id && <small>you</small>}{p.id === state.hostId && <small className="host-label">host</small>}</span><span className={`ready-status ${p.ready ? 'is-ready' : ''}`}>{!state.connectedIds.includes(p.id) ? 'Disconnected' : p.ready ? <><Icon name="check" size={14}/> Ready</> : 'Not ready'}</span>{me?.id === state.hostId && p.id !== me.id && !state.connectedIds.includes(p.id) && <button className="text-button remove-player" onClick={() => send({ type: 'remove', playerId: p.id })}>Remove</button>}</div>)}</div>
-          <div className="lobby-actions"><button className={`button ${me?.ready ? 'secondary' : 'primary'}`} disabled={pending || !online} onClick={() => send({ type: 'ready' })}>{me?.ready ? <><Icon name="check"/> You’re ready</> : 'Ready to play'}</button>{me?.id === state.hostId && <button className="button primary" onClick={() => send({ type: 'start' })} disabled={pending || !online || state.players.length < 2 || !state.players.every(p => p.ready && state.connectedIds.includes(p.id))}>Shuffle & deal <Icon name="arrow"/></button>}</div><p className="lobby-hint">{state.players.length < 2 ? 'Invite at least one friend to start.' : state.players.every(p => p.ready) ? me?.id === state.hostId ? 'Everyone is ready. Your table is waiting.' : 'Everyone is ready. Waiting for the host to deal.' : 'Everyone needs to be ready before the first deal.'}</p>
-        </section><aside className="lobby-rules"><div className="mini-cards"><PlayingCard small/><PlayingCard small face={{ rank: 7, suit: 'spades' }}/></div><h2>The house rules</h2><p>Start with four cards.<br/>Remember your bottom two.<br/>Aim for the lowest score.</p><div className="power-cheatsheet"><span>7 / 8</span><p>Peek at your own</p><span>9 / 10</span><p>Peek at someone else’s</p><span>J</span><p>Blind swap</p><span>Q</span><p>{queenLabel}</p><span>K</span><p>Peek at both, then swap</p></div><button className="text-button" onClick={() => setRules(true)}>Read all rules <Icon name="arrow" size={14}/></button></aside>
-      </main> : state.phase === 'finished' ? <main className="results"><span className="eyebrow">Game {state.gameNumber} · Final scores</span><h1>{resultTitle(state.winners, [...(state.resultWinners ?? []), ...state.players, ...(state.session?.players ?? [])])}</h1><p className="muted">Lowest score wins. Ready for another?</p><div className="score-table">{[...state.players].sort((a, b) => a.score! - b.score!).map(p => <div className={`score-row ${state.winners.includes(p.id) ? 'winner' : ''}`} key={p.id}><span className="score-name">{p.name}{p.id === me?.id && <small>you</small>}{state.winners.includes(p.id) && <span className="winner-label">{state.winners.length > 1 ? 'Tied winner' : 'Winner'}</span>}</span><div className="score-cards">{p.hand.filter(Boolean).map((c, i) => <PlayingCard key={i} face={c!.face} small/>)}</div><strong className="score-value">{p.score}</strong><span className={`ready-status ${p.ready ? 'is-ready' : ''}`}>{p.ready ? <><Icon name="check" size={14}/> Ready</> : !state.connectedIds.includes(p.id) ? 'Disconnected' : ''}</span>{me?.id === state.hostId && p.id !== me?.id && !state.connectedIds.includes(p.id) && <button className="text-button" onClick={() => send({ type: 'remove', playerId: p.id })}>Remove</button>}</div>)}</div>{sessionScoreboard()}{queenSettings()}<button className={`button ${me?.ready ? 'secondary' : 'primary'}`} disabled={pending || !online || state.players.length < 2} onClick={() => send({ type: 'ready' })}>{me?.ready ? <><Icon name="check"/> Ready for the next game</> : 'Ready for the next game'}<Icon name="arrow"/></button><p className="lobby-hint">{state.players.filter(p => p.ready).length} of {state.players.length} ready · The next game starts when everyone is ready.</p><button className="text-button" onClick={leave}>Leave table</button></main>
+          <div className="lobby-actions">{me && <button className={`button ${me?.ready ? 'secondary' : 'primary'}`} disabled={pending || !online} onClick={() => send({ type: 'ready' })}>{me?.ready ? <><Icon name="check"/> You’re ready</> : 'Ready to play'}</button>}{me?.id === state.hostId && <button className="button primary" onClick={() => send({ type: 'start' })} disabled={pending || !online || state.players.length < 2 || !state.players.every(p => p.ready && state.connectedIds.includes(p.id))}>Shuffle & deal <Icon name="arrow"/></button>}</div><p className="lobby-hint">{state.players.length < 2 ? 'Invite at least one friend to start.' : state.players.every(p => p.ready) ? me?.id === state.hostId ? 'Everyone is ready. Your table is waiting.' : 'Everyone is ready. Waiting for the host to deal.' : 'Everyone needs to be ready before the first deal.'}</p>
+        {spectatorsPanel()}</section><aside className="lobby-rules"><div className="mini-cards"><PlayingCard small/><PlayingCard small face={{ rank: 7, suit: 'spades' }}/></div><h2>The house rules</h2><p>Start with four cards.<br/>Remember your bottom two.<br/>Aim for the lowest score.</p><div className="power-cheatsheet"><span>7 / 8</span><p>Peek at your own</p><span>9 / 10</span><p>Peek at someone else’s</p><span>J</span><p>Blind swap</p><span>Q</span><p>{queenLabel}</p><span>K</span><p>Peek at both, then swap</p></div><button className="text-button" onClick={() => setRules(true)}>Read all rules <Icon name="arrow" size={14}/></button></aside>
+      </main> : state.phase === 'finished' ? <main className="results"><span className="eyebrow">Game {state.gameNumber} · Final scores</span><h1>{resultTitle(state.winners, [...(state.resultWinners ?? []), ...state.players, ...(state.session?.players ?? [])])}</h1><p className="muted">Lowest score wins. Ready for another?</p><div className="score-table">{state.players.filter(p => p.score !== null).sort((a, b) => a.score! - b.score!).map(p => <div className={`score-row ${state.winners.includes(p.id) ? 'winner' : ''}`} key={p.id}><span className="score-name">{p.name}{p.id === me?.id && <small>you</small>}{state.winners.includes(p.id) && <span className="winner-label">{state.winners.length > 1 ? 'Tied winner' : 'Winner'}</span>}</span><div className="score-cards">{p.hand.filter(Boolean).map((c, i) => <PlayingCard key={i} face={c!.face} small/>)}</div><strong className="score-value">{p.score}</strong><span className={`ready-status ${p.ready ? 'is-ready' : ''}`}>{p.ready ? <><Icon name="check" size={14}/> Ready</> : !state.connectedIds.includes(p.id) ? 'Disconnected' : ''}</span>{me?.id === state.hostId && p.id !== me?.id && !state.connectedIds.includes(p.id) && <button className="text-button" onClick={() => send({ type: 'remove', playerId: p.id })}>Remove</button>}</div>)}</div>{state.players.some(p => p.score === null) && <div className="next-game-seats"><span>Joining next game</span>{state.players.filter(p => p.score === null).map(p => <span key={p.id}>{p.name}{p.id === me?.id ? ' (you)' : ''} · {p.ready ? 'ready' : !state.connectedIds.includes(p.id) ? 'disconnected' : 'not ready'}{me?.id === state.hostId && !state.connectedIds.includes(p.id) && p.id !== me.id && <button className="text-button" onClick={() => send({ type: 'remove', playerId: p.id })}>Remove</button>}</span>)}</div>}{sessionScoreboard()}{queenSettings()}{spectatorsPanel()}{me && <button className={`button ${me?.ready ? 'secondary' : 'primary'}`} disabled={pending || !online || state.players.length < 2} onClick={() => send({ type: 'ready' })}>{me?.ready ? <><Icon name="check"/> Ready for the next game</> : 'Ready for the next game'}<Icon name="arrow"/></button>}<p className="lobby-hint">{state.players.filter(p => p.ready).length} of {state.players.length} ready · The next game starts when everyone is ready.</p><button className="text-button" onClick={leave}>Leave table</button></main>
       : <main className="game-layout">
         <div className="table-toolbar"><div className="room-meta"><span className="private-label"><Icon name="lock" size={12}/> Private table</span><button className="room-code-button" onClick={copyInvite}>{formatCode(state.code)}<Icon name={copied ? 'check' : 'copy'} size={13}/></button></div><div className="game-meta"><span>Game {state.gameNumber}</span><span className="meta-dot">·</span><span>{state.phase === 'peek' ? 'Opening look' : state.phase === 'ending' ? 'Final matches' : state.calledBy ? `${state.finalTurns} final ${state.finalTurns === 1 ? 'turn' : 'turns'}` : `Round ${Math.floor(state.turns / state.players.length) + 1}`}</span>{endGameButton}</div></div>
         <div ref={boardRef} className={`card-table ${dealing ? 'dealing' : ''} ${layout.crowded ? 'crowded-table' : ''}`}>
-          <div className={`opponents opponents-${Math.min(state.players.length - 1, 5)}`}>{state.players.filter(p => p.id !== me?.id).map((p, i) => hand(p, false, i))}</div>
+          <div className={`opponents opponents-${Math.min(state.players.length - 1, 5)}`}>{state.players.filter(p => p.id !== perspective?.id).map((p, i) => hand(p, false, i))}</div>
           <div className="table-middle">
             <div className="pile-area">
               <div className="pile">
@@ -561,15 +581,15 @@ export default function Home() {
             </div>
             <div className="table-message" aria-live="polite">{dealing ? <span className="shuffle-indicator"><Icon name="cards" size={16}/> Shuffling & dealing</span> : state.phase !== 'peek' && <>{state.calledBy && <span className="cambio-badge"><Icon name="lock" size={12}/>{state.players.find(p => p.id === state.calledBy)?.name} called Cambio</span>}{recentMatches.length ? <div className="recent-actions">{recentMatches.map(event => <span key={event.id} title={event.label ?? undefined}>{event.label}</span>)}</div> : <span>{state.message}</span>}</>}</div>
           </div>
-          <div className="your-area">{me && hand(me, true, state.players.findIndex(p => p.id === me.id))}</div>
-        <section className={`action-bar ${matching && canMatch ? 'matching-mode' : ''}`} aria-label="Game actions"><div className="action-instruction" aria-live="polite"><span className="action-indicator">{transferMine ? <Icon name="arrow"/> : matching && canMatch ? '=' : state.phase === 'ending' ? countdown ?? '·' : isTurn && state.phase === 'playing' ? '→' : <Icon name="cards"/>}</span><div><h2>{instruction.title}</h2><p>{instruction.detail}</p></div></div><div className="action-controls">
+          <div className="your-area">{perspective && hand(perspective, true, state.players.findIndex(p => p.id === perspective.id))}</div>
+        <section className={`action-bar ${matching && canMatch ? 'matching-mode' : ''}`} aria-label="Game actions"><div className="action-instruction" aria-live="polite"><span className="action-indicator">{transferMine ? <Icon name="arrow"/> : matching && canMatch ? '=' : state.phase === 'ending' ? countdown ?? '·' : isTurn && state.phase === 'playing' ? '→' : <Icon name="cards"/>}</span><div><h2>{instruction.title}</h2><p>{instruction.detail}</p></div></div><div className="action-controls">{spectatorsPanel()}
           {offlinePlayers.length > 0 && <div className="recovery-panel"><p>{offlinePlayers.map(p => p.name).join(', ')} disconnected · {offlinePlayers.length === 1 ? 'seat' : 'seats'} saved</p>{me?.id === state.hostId && recoverPlayer && <button className="button secondary" disabled={!online || pending || recoverWait !== 0} onClick={() => send({ type: 'recover-player', playerId: recoverPlayer.id })}>{recoverWait ? `Wait ${recoverWait}s` : state.phase === 'peek' ? `Continue without ${recoverPlayer.name}` : state.transfer?.from === recoverPlayer.id ? 'Complete card transfer' : `Skip ${recoverPlayer.name}’s turn`}</button>}</div>}
           {state.phase === 'peek' && me?.initialCards?.some(s => s === 'waiting') && <button className="button primary" onClick={() => send({ type: 'reveal-initial' })} disabled={pending || !online || dealing}>{me.initial === 'waiting' ? 'Look at bottom two' : 'Look at remaining card'}</button>}
           {state.phase === 'peek' && me?.initial === 'viewing' && <button className="button primary" onClick={() => send({ type: 'close-initial' })} disabled={pending || !online}>Done looking <Icon name="check"/></button>}
           {isTurn && state.phase === 'playing' && !state.drawn && !state.power && !state.transfer && <><button className="button secondary cambio-button" title={state.turns < state.players.length * 2 ? 'Available after two complete rounds' : 'Lock your hand and give everyone one last turn'} disabled={pending || !online || !!state.calledBy || state.turns < state.players.length * 2} onClick={() => send({ type: 'cambio' })}>Call Cambio</button><button className="button primary" disabled={pending || !online} onClick={() => { setMatching(false); send({ type: 'draw' }); }}>Draw card <Icon name="arrow"/></button></>}
           {isTurn && state.drawn && <div className="drawn-choice"><button className="button primary" onClick={discardDrawn} disabled={!canDiscardDrawn}>Discard{state.drawn.rank >= 7 && state.drawn.rank <= 13 ? ' & choose power' : ''}<Icon name="arrow" size={16}/></button></div>}
           {isTurn && state.power && <><button className="button secondary" disabled={pending || !online || !!state.transfer} onClick={() => { setMatching(false); setSelected(null); send({ type: 'skip-power' }); }}>{state.power.step === 'swap' ? 'Skip swap' : 'Skip power'}</button>{state.power.step === 'view' && <button className="button primary" disabled={pending || !online || !!state.transfer} onClick={() => send({ type: 'close-peek' })}>Done looking <Icon name="check"/></button>}</>}
-          {(state.phase === 'playing' || state.phase === 'ending') && <button className={`button match-button ${matching && canMatch ? 'is-matching' : ''}`} disabled={!online || pending || !canMatch} onClick={() => { setMatching(m => !m); setSelected(null); }}> {matching && canMatch ? 'Cancel match' : 'Match a card'}<kbd>M</kbd></button>}
+          {me && (state.phase === 'playing' || state.phase === 'ending') && <button className={`button match-button ${matching && canMatch ? 'is-matching' : ''}`} disabled={!online || pending || !canMatch} onClick={() => { setMatching(m => !m); setSelected(null); }}> {matching && canMatch ? 'Cancel match' : 'Match a card'}<kbd>M</kbd></button>}
         </div></section>
         </div>
         <footer className="table-footer"><span><Icon name="users" size={13}/>{state.players.length} players<span className="meta-dot">·</span>Lowest score wins<span className="meta-dot">·</span>Q: {queenLabel}</span><span className="vanity-footer">{credits}</span></footer>
@@ -582,7 +602,7 @@ export default function Home() {
       {roomModal === 'browse' ? <div className="room-list" aria-live="polite">
         {roomsLoading ? <p className="muted">Loading rooms…</p> : roomsError ? <p role="alert">{roomsError}</p> : listedRooms.length === 0 ? <p className="muted">No rooms open</p> : listedRooms.map(room => <div className="room-list-row" key={room.id}>
           <div className="room-list-info"><strong><Icon name="lock" size={13}/><span className="sr-only">Private room · </span>{room.hostName}</strong><span>{room.players}/10 players · game {room.gameNumber ?? 1}</span></div>
-          <button className="button secondary" disabled={room.players >= 10 || (room.phase !== 'lobby' && room.phase !== 'finished')} onClick={() => openJoin(room)}>{room.phase !== 'lobby' && room.phase !== 'finished' ? 'Game in progress' : room.players >= 10 ? 'Full' : 'Join'}</button>
+          <button className="button secondary" onClick={() => openJoin(room)}>{room.phase !== 'lobby' && room.phase !== 'finished' ? 'Watch' : room.players >= 10 ? 'Watch' : 'Join'}</button>
         </div>)}
       </div> : <form className="room-code-form" onSubmit={e => join(false, e)}>
         {selectedRoom && <p className="muted selected-room"><Icon name="lock" size={12}/> {selectedRoom.hostName}</p>}

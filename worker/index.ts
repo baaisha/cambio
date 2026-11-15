@@ -1,4 +1,5 @@
-import { addPlayer, applyAction, finishIfDue, newGame, syncPresence, viewFor, type Action, type Game } from '../lib/game.ts';
+import { DISCONNECT_GRACE_MS, applyAction, finishIfDue, newGame, syncPresence, viewFor, type Action, type Game } from '../lib/game.ts';
+import { assignConnectedHost, joinRoom, promoteQueued, setQueued, syncSpectators } from '../lib/membership.ts';
 import { createRoomCode, validRoomCode } from '../lib/room-code.ts';
 
 interface Env { ROOMS: DurableObjectNamespace; ALLOWED_ORIGINS: string }
@@ -112,7 +113,7 @@ export class GameRoom {
           const name = nameFrom(body);
           const playerId = crypto.randomUUID(), token = crypto.randomUUID() + crypto.randomUUID();
           if (!stored) stored = { game: newGame(url.searchParams.get('code')!, playerId, name), credentials: {}, handled: {} };
-          else addPlayer(stored.game, playerId, name);
+          else { await this.schedule(stored); joinRoom(stored.game, playerId, name); }
           stored.directoryId ??= crypto.randomUUID();
           stored.credentials[playerId] = await hash(token);
           stored.game.updatedAt = Date.now();
@@ -148,13 +149,18 @@ export class GameRoom {
     }
   }
   private async schedule(stored: StoredRoom) {
-    syncPresence(stored.game, this.connected());
+    const connected = this.connected();
+    syncPresence(stored.game, connected);
+    for (const id of syncSpectators(stored.game, connected)) { delete stored.credentials[id]; delete stored.handled[id]; }
+    promoteQueued(stored.game, connected);
+    assignConnectedHost(stored.game, connected);
     stored.directoryId ??= crypto.randomUUID();
     await this.ctx.storage.put('room', stored);
     await this.publishListing(stored);
     const now = Date.now(), times = [stored.game.updatedAt + DAY];
     if (stored.game.phase === 'ending' && stored.game.deadline && !stored.game.transfer) times.push(Math.max(now + 1, stored.game.deadline));
     if (stored.game.flash && stored.game.flash.until > now) times.push(stored.game.flash.until);
+    for (const spectator of stored.game.spectators ?? []) if (spectator.disconnectedAt !== undefined) times.push(Math.max(now + 1, spectator.disconnectedAt + DISCONNECT_GRACE_MS));
     for (const ws of this.ctx.getWebSockets().filter(s => s.readyState === 1)) {
       const a = ws.deserializeAttachment() as Session;
       if (!a?.playerId) times.push(Math.max(now + 1, a.created + 15000));
@@ -191,14 +197,14 @@ export class GameRoom {
           for (const old of this.ctx.getWebSockets()) if (old !== ws && (old.deserializeAttachment() as Session)?.playerId === payload.playerId) old.close(4001, 'Your seat is open in another tab.');
           a.playerId = payload.playerId; ws.serializeAttachment(a);
           syncPresence(stored.game, this.connected(), now);
-          if (!this.connected().includes(stored.game.hostId)) stored.game.hostId = a.playerId!;
+          assignConnectedHost(stored.game, this.connected());
           await this.ctx.storage.put('room', stored);
-          this.broadcast(stored); await this.schedule(stored); return;
+          await this.schedule(stored); this.broadcast(stored); return;
         }
         if (!a.playerId || !stored.credentials[a.playerId]) { ws.close(4003, 'Sign in to your seat first.'); return; }
         if (payload.type === 'sync') { this.broadcast(stored); return; }
         if (payload.type !== 'action' || typeof payload.id !== 'string' || payload.id.length > 80) throw new Error('Invalid action.');
-        if (finishIfDue(stored.game, now)) await this.ctx.storage.put('room', stored);
+        if (finishIfDue(stored.game, now)) await this.schedule(stored);
         const handled = stored.handled[a.playerId] ?? [];
         if (!handled.includes(payload.id)) {
           const action = payload.action as Action;
@@ -209,7 +215,8 @@ export class GameRoom {
           if (['peek', 'swap', 'replace', 'give'].includes(action.type) && payload.version !== stored.game.version) throw new Error('The table changed. Please select the card again.');
           // Changes happen on a clone: a rejected command cannot partially mutate live state.
           const next = structuredClone(stored);
-          applyAction(next.game, a.playerId, action, now);
+          if (action.type === 'queue-seat') setQueued(next.game, a.playerId, action.queued, now);
+          else applyAction(next.game, a.playerId, action, now);
           if (action.type === 'remove') { delete next.credentials[action.playerId]; delete next.handled[action.playerId]; }
           next.handled[a.playerId] = [...handled, payload.id].slice(-128);
           await this.ctx.storage.put('room', next);
@@ -233,11 +240,10 @@ export class GameRoom {
       if (!stored) return;
       const connected = this.connected();
       syncPresence(stored.game, connected);
-      if (!connected.includes(stored.game.hostId) && connected.length) stored.game.hostId = connected[0];
+      assignConnectedHost(stored.game, connected);
       if (stored.game.phase === 'lobby' || stored.game.phase === 'finished') for (const p of stored.game.players) if (!connected.includes(p.id)) p.ready = false;
-      await this.ctx.storage.put('room', stored);
+      await this.schedule(stored);
       this.broadcast(stored);
-      await this.publishListing(stored);
     });
   }
   async webSocketError(ws: WebSocket): Promise<void> { await this.webSocketClose(ws, 1011, 'Reconnect to continue.'); }
@@ -257,7 +263,7 @@ export class GameRoom {
       let changed = finishIfDue(stored.game, now);
       if (stored.game.flash && now >= stored.game.flash.until) { stored.game.flash = null; changed = true; }
       if (changed) await this.ctx.storage.put('room', stored);
-      this.broadcast(stored); await this.schedule(stored);
+      await this.schedule(stored); this.broadcast(stored);
     });
   }
 }

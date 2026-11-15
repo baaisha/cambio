@@ -3,6 +3,7 @@ export type Card = { rank: number; suit: Suit };
 export type Target = { playerId: string; slot: number };
 export type QueenRule = 'look-then-swap' | 'swap-then-look';
 export type SessionScore = { id: string; name: string; wins: number; ties: number; points: number; games: number };
+export type Spectator = { id: string; name: string; queuedAt: number | null; disconnectedAt?: number };
 export type SwapEvent = { id: string; actorId: string; a: Target; b: Target; at: number };
 export type CardPlace = Target | 'draw' | 'discard';
 export type CardMove = { from: CardPlace; to: CardPlace };
@@ -18,6 +19,8 @@ export type Power = {
   received?: { target: Target; card: Card }[];
 };
 export type Game = {
+  spectators?: Spectator[];
+  resultPlayerIds?: string[];
   resultWinners?: { id: string; name: string }[];
   disconnectedAt?: Record<string, number>;
   session?: { games: number; players: Record<string, SessionScore> };
@@ -44,6 +47,7 @@ export type Action =
   | { type: 'give'; slot: number }
   | { type: 'remove'; playerId: string }
   | { type: 'recover-player'; playerId: string }
+  | { type: 'queue-seat'; queued: boolean }
   | { type: 'set-queen-rule'; rule: QueenRule };
 
 export function value(card: Card): number {
@@ -106,7 +110,7 @@ function begin(game: Game): void {
   game.drawn = null; game.power = null; game.turnComplete = false;
   game.opportunity = null; game.transfer = null; game.calledBy = null;
   game.finalTurns = null; game.exhausted = false; game.deadline = null;
-  game.winners = []; game.resultWinners = []; game.flash = null; game.lastSwap = null; game.motions = []; game.gameNumber++;
+  game.winners = []; game.resultWinners = []; game.resultPlayerIds = []; game.flash = null; game.lastSwap = null; game.motions = []; game.gameNumber++;
   game.message = 'Look at your bottom two cards. Hide them when you are ready.';
 }
 function publishDiscard(game: Game, card: Card): void {
@@ -148,6 +152,7 @@ function finishTurn(game: Game, now: number): void {
 export function finishIfDue(game: Game, now = Date.now()): boolean {
   if (game.phase !== 'ending' || game.deadline === null || now < game.deadline || game.transfer) return false;
   game.phase = 'finished';
+  game.resultPlayerIds = game.players.map(p => p.id);
   const lowest = Math.min(...game.players.map(score));
   game.winners = game.players.filter(p => score(p) === lowest).map(p => p.id);
   game.resultWinners = game.players.filter(p => game.winners.includes(p.id)).map(p => ({ id: p.id, name: p.name }));
@@ -390,11 +395,14 @@ export function cardLabel(card: Card): string {
 }
 
 export function viewFor(game: Game, id: string, now = Date.now()) {
-  playerById(game, id);
+  const spectator = game.spectators?.find(s => s.id === id);
+  if (!spectator) playerById(game, id);
   const isActive = game.players[game.active]?.id === id;
   const power = isActive ? game.power : null;
   return {
     code: game.code, hostId: game.hostId, phase: game.phase,
+    yourRole: spectator ? 'spectator' as const : 'player' as const,
+    spectators: [...(game.spectators ?? [])].sort((a, b) => (a.queuedAt ?? Infinity) - (b.queuedAt ?? Infinity)).map(s => ({ id: s.id, name: s.name, queued: s.queuedAt !== null })),
     activeId: game.players[game.active]?.id, turns: game.turns,
     gameNumber: game.gameNumber, version: game.version,
     disconnectedAt: game.disconnectedAt ?? {},
@@ -402,7 +410,7 @@ export function viewFor(game: Game, id: string, now = Date.now()) {
       id: p.id, name: p.name, ready: p.ready, initial: p.initial,
       initialCards: p.id === id ? p.initialCards ?? [p.initial, p.initial] : null,
       count: p.hand.filter(Boolean).length,
-      score: game.phase === 'finished' ? score(p) : null,
+      score: game.phase === 'finished' && (!game.resultPlayerIds || game.resultPlayerIds.includes(p.id)) ? score(p) : null,
       hand: p.hand.map((card, slot) => {
         if (!card) return null;
         const initial = game.phase === 'peek' && (slot === 2 || slot === 3) && (p.initialCards?.[slot - 2] ?? p.initial) === 'viewing';
