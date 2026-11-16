@@ -141,3 +141,16 @@ Create a room at the final URL, open the invitation in a second browser/profile,
 - `scripts/spectator-smoke.mjs`: local spectator privacy, queue, scoring, and rematch network check.
 - `scripts/smoke.mjs`: optional local multiplayer network check.
 - `PLAN.md`: design rationale and planning record. This README describes the implemented behavior and setup.
+
+
+## Isolated connection diagnostics
+
+Visit `/connection-check` on the deployed Vercel site. The 20-second check compares direct HTTP, relayed HTTP, direct WebSocket, and relayed WebSocket. The optional six-minute run checks sustained echoes and planned reconnects. Copy results to share timings, failures, browser version, timestamp, and build; reports contain no room/seat credentials. Keep the tab foregrounded while measuring.
+
+- Direct HTTP: browser → existing Worker `/health`.
+- Relayed HTTP: browser → Vercel `/api/connection-check/http` → fixed Worker `/health`. No caching; an eight-second upstream timeout; validates the response.
+- Direct WebSocket: browser → Worker `/diagnostics/echo`.
+- Relayed WebSocket: browser → Vercel `/api/connection-check/ws` → Worker `/diagnostics/echo`. `@vercel/functions` upgrades the browser socket; `ws` holds the upstream socket. Only bounded diagnostic ping nonces are forwarded and only validated Worker echoes return. There is no user-selectable upstream and no room API forwarding.
+- The Worker echo handler runs outside Durable Objects, uses no storage, accepts at most thirty tiny messages per connection, and closes after fifty seconds. The Vercel relay deliberately closes after forty-five seconds, below its sixty-second function limit. The page reconnects on those explicitly planned closures. Unexpected failures are reported rather than hidden by retries.
+- Ordinary game HTTP/WebSocket URLs, authentication, rooms, Durable Objects, and frontend connection selection are unchanged. These probes measure a possible future alternate network path, not game-protocol compatibility or automatic fallback.
+- Local `npm test` covers the relay over real local sockets. `node scripts/connection-check-smoke.mjs [frontend-origin]` checks deployed HTTP and real Worker-backed echoes without a browser. Set `GAME_SERVER` to select a local Worker for the script. The Next.js WebSocket upgrade API needs the Vercel runtime; plain `next dev` intentionally returns an explanatory 503 for that diagnostic endpoint.

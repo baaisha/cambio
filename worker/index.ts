@@ -1,5 +1,6 @@
 import { DISCONNECT_GRACE_MS, applyAction, finishIfDue, newGame, syncPresence, viewFor, type Action, type Game } from '../lib/game.ts';
 import { assignConnectedHost, joinRoom, promoteQueued, setQueued, switchToSpectating, syncSpectators } from '../lib/membership.ts';
+import { diagnosticNonce } from '../lib/connection-check.ts';
 import { createRoomCode, validRoomCode } from '../lib/room-code.ts';
 
 interface Env { ROOMS: DurableObjectNamespace; ALLOWED_ORIGINS: string }
@@ -34,6 +35,22 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     let response: Response;
     try {
+      if (url.pathname === '/diagnostics/echo' && request.method === 'GET') {
+        if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'WebSocket connection required.' }, 426);
+        const pair = new WebSocketPair(), socket = pair[1];
+        socket.accept();
+        let count = 0;
+        const timer = setTimeout(() => socket.close(1000, 'Diagnostic reconnect'), 50000);
+        socket.addEventListener('message', event => {
+          const nonce = typeof event.data === 'string' ? diagnosticNonce(event.data) : null;
+          if (!nonce || ++count > 30) { socket.close(1008, 'Invalid diagnostic message'); return; }
+          socket.send(JSON.stringify({ type: 'echo', id: nonce, workerTime: Date.now() }));
+        });
+        socket.addEventListener('close', () => clearTimeout(timer));
+        socket.addEventListener('error', () => clearTimeout(timer));
+        socket.send(JSON.stringify({ type: 'ready', via: 'cloudflare-worker' }));
+        return new Response(null, { status: 101, webSocket: pair[0] });
+      }
       if (url.pathname === '/health') response = json({ ok: true, service: 'cambio' });
       else if (request.method === 'GET' && url.pathname === '/rooms') {
         response = await env.ROOMS.get(env.ROOMS.idFromName('directory')).fetch('https://internal/directory');

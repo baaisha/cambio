@@ -2,7 +2,9 @@
   "name": "cambio",
   "version": "0.1.0",
   "private": true,
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev --webpack --hostname 127.0.0.1",
     "dev:api": "wrangler dev --port 8787",
@@ -16,15 +18,18 @@
     "account:cloudflare": "wrangler whoami"
   },
   "dependencies": {
+    "@vercel/functions": "^3.11.3",
     "next": "^16.0.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "ws": "^8.23.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261110.1",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "@types/ws": "^8.18.2",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
     "wrangler": "^4.0.0"
