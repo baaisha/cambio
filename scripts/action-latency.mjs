@@ -41,12 +41,6 @@ async function act(client, action) {
   const version = client.state.version;
   const deadline = Date.now() + 10000;
   while (clients.some(c => !c.state || c.state.version < version)) {
-    if (Date.now() > deadline) throw new Error('Other player state did not catch up');
-    await pause(10);
-  }
-  const version = client.state.version;
-  const deadline = Date.now() + 10000;
-  while (clients.some(c => !c.state || c.state.version < version)) {
     if (Date.now() > deadline) throw new Error('Peer state synchronization timeout');
     await pause(10);
   }
