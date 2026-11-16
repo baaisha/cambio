@@ -48,7 +48,9 @@ try {
   const denied=new Promise((resolve,reject)=>{const timeout=setTimeout(()=>{invalid.terminate();reject(new Error('Auth close timeout'));},8000);invalid.on('close',code=>{clearTimeout(timeout);resolve(code);});invalid.on('error',reject);});
   invalid.on('open',()=>invalid.send(JSON.stringify({type:'auth',playerId:'invalid',token:'invalid'})));
   assert.equal(await denied,4003);
-  await act(host,{type:'end-game'}); await until(()=>viewer.state.phase==='finished'); assert.equal(viewer.state.yourRole,'player');
+  const currentHost = [host, guest].find(c => c.seat.playerId === host.state.hostId);
+  assert.ok(currentHost);
+  await act(currentHost,{type:'end-game'}); await until(()=>viewer.state.phase==='finished'); assert.equal(viewer.state.yourRole,'player');
   assert.equal(viewer.state.players.find(p=>p.id===viewer.seat.playerId).score,null);
   console.log('PASS: production relay identity/health, room creation/join, mixed direct/relay players, private peeks/draws, action deduplication, reconnect, auth close codes, scoring, and spectator promotion');
 } finally { for(const c of clients)c.ws.close(); }

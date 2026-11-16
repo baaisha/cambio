@@ -152,7 +152,7 @@ Visit `/connection-check` on the deployed Vercel site. The 20-second check compa
 - Direct WebSocket: browser → Worker `/diagnostics/echo`.
 - Relayed WebSocket: browser → Vercel `/api/connection-check/ws` → Worker `/diagnostics/echo`. `@vercel/functions` upgrades the browser socket; `ws` holds the upstream socket. Only bounded diagnostic ping nonces are forwarded and only validated Worker echoes return. There is no user-selectable upstream and no room API forwarding.
 - The Worker echo handler runs outside Durable Objects, uses no storage, accepts at most thirty tiny messages per connection, and closes after fifty seconds. The Vercel relay deliberately closes after forty-five seconds, below its sixty-second function limit. The page reconnects on those explicitly planned closures. Unexpected failures are reported rather than hidden by retries.
-- Ordinary game HTTP/WebSocket URLs, authentication, rooms, Durable Objects, and frontend connection selection are unchanged. These probes measure a possible future alternate network path, not game-protocol compatibility or automatic fallback.
+- These diagnostic probes remain independent from gameplay and do not create seats or touch rooms. Normal gameplay now uses the automatic connection fallback described below; the probes continue to compare each path explicitly.
 - Local `npm test` covers the relay over real local sockets. `node scripts/connection-check-smoke.mjs [frontend-origin]` checks deployed HTTP and real Worker-backed echoes without a browser. Set `GAME_SERVER` to select a local Worker for the script. The Next.js WebSocket upgrade API needs the Vercel runtime; plain `next dev` intentionally returns an explanatory 503 for that diagnostic endpoint.
 
 ## Automatic game connection fallback
