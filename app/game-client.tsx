@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
 import { cardLabel, rankLabel, DISCONNECT_GRACE_MS, type Action, type Card, type GameView, type Target } from '@/lib/game';
 import { animateMotion, animateSwap } from '@/lib/swap-animation';
+import { browserGuestToken } from '@/lib/browser-identity';
 import { GameTransport, type GameRoute } from '@/lib/game-transport';
 import { normalizeRoomCode, validRoomCode } from '@/lib/room-code';
 import { handColumns, handPosition, handViewport, tableLayout, resultTitle, turnTitle, matchActivity } from '@/lib/table-layout';
@@ -235,7 +236,7 @@ export default function Home() {
       const candidate = new WebSocket(transport.socketUrl(seat!.code, window.location.origin));
       current = candidate; socket.current = candidate;
       authTimer = setTimeout(() => candidate.close(), transport.route === 'direct' ? 4000 : 12000);
-      candidate.onopen = () => candidate.send(JSON.stringify({ type: 'auth', playerId: seat!.playerId, token: seat!.token }));
+      candidate.onopen = () => candidate.send(JSON.stringify({ type: 'auth', playerId: seat!.playerId, token: seat!.token, guestToken: browserGuestToken() }));
       candidate.onmessage = event => {
         if (disposed || current !== candidate) return;
         if (event.data === 'pong') { clearTimeout(pongTimer); return; }
@@ -375,7 +376,7 @@ export default function Home() {
     if (!API) { setError('The game server is unavailable. Please try again later.'); return; }
     setBusy(true); setError('');
     try {
-      const response = await transport.request(create ? '/rooms' : `/rooms/${clean}/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim(), ...(!create && selectedRoom ? { roomId: selectedRoom.id } : {}) }) });
+      const response = await transport.request(create ? '/rooms' : `/rooms/${clean}/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim(), guestToken: browserGuestToken(), ...(!create && selectedRoom ? { roomId: selectedRoom.id } : {}) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Unable to join. Try again.');
       const next = result as Seat;
@@ -515,7 +516,7 @@ export default function Home() {
     return <section className="session-scoreboard" aria-labelledby="session-title">
       <div className="session-heading"><h2 id="session-title">Session scoreboard</h2><span>{state.session.games} {state.session.games === 1 ? 'game' : 'games'}</span></div>
       <table><thead><tr><th scope="col">Player</th><th scope="col">Wins</th><th scope="col">Ties</th><th scope="col">Total points</th></tr></thead>
-        <tbody>{players.map(p => <tr key={p.id}><th scope="row">{p.name}{p.id === me?.id && <small>you</small>}</th><td>{p.wins}</td><td>{p.ties}</td><td>{p.points}</td></tr>)}</tbody>
+        <tbody>{players.map(p => <tr key={p.id}><th scope="row">{p.name}{p.memberIds?.includes(seat?.playerId ?? '') && <small>you</small>}</th><td>{p.wins}</td><td>{p.ties}</td><td>{p.points}</td></tr>)}</tbody>
       </table>
     </section>;
   }

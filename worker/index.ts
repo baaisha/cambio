@@ -1,3 +1,4 @@
+import { bindSessionScore, normalizeSessionScores, sessionScoreId, validGuestToken } from '../lib/session-scores.ts';
 import { DISCONNECT_GRACE_MS, applyAction, finishIfDue, newGame, syncPresence, viewFor, type Action, type Game } from '../lib/game.ts';
 import { assignConnectedHost, joinRoom, promoteQueued, setQueued, switchToSpectating, syncSpectators } from '../lib/membership.ts';
 import { RoomDirectoryPublisher, type DirectoryPublication } from '../lib/room-directory.ts';
@@ -6,7 +7,7 @@ import { diagnosticNonce } from '../lib/connection-check.ts';
 import { createRoomCode, validRoomCode } from '../lib/room-code.ts';
 
 interface Env { ROOMS: DurableObjectNamespace; ALLOWED_ORIGINS: string }
-type StoredRoom = { game: Game; credentials: Record<string, string>; handled: Record<string, string[]>; directoryId?: string };
+type StoredRoom = { game: Game; credentials: Record<string, string>; handled: Record<string, string[]>; directoryId?: string; identities?: Record<string, string> };
 type RoomListing = { id: string; hostName: string; players: number; gameNumber: number; phase: Game['phase']; updatedAt: number; private: true };
 type Session = { playerId?: string; created: number; bucket: number; count: number };
 const DAY = 24 * 60 * 60 * 1000;
@@ -143,9 +144,13 @@ export class GameRoom {
           const body = JSON.parse(await request.text());
           if (url.pathname === '/join' && body.roomId && body.roomId !== stored?.directoryId) return json({ error: 'That code does not match the selected room.' }, 400);
           const name = nameFrom(body);
+          if (body.guestToken !== undefined && !validGuestToken(body.guestToken)) throw new Error('Invalid browser identity. Please reload.');
           const playerId = crypto.randomUUID(), token = crypto.randomUUID() + crypto.randomUUID();
           if (!stored) stored = { game: newGame(url.searchParams.get('code')!, playerId, name), credentials: {}, handled: {} };
-          else { await this.schedule(stored); joinRoom(stored.game, playerId, name); }
+          else { await this.schedule(stored); stored = structuredClone(stored); joinRoom(stored.game, playerId, name); }
+          const identity = validGuestToken(body.guestToken) ? await hash(body.guestToken) : undefined;
+          const scoreId = bindSessionScore(stored.game, playerId, name, identity ? stored.identities?.[identity] : undefined);
+          if (identity) { stored.identities ??= {}; stored.identities[identity] = scoreId; }
           stored.directoryId ??= crypto.randomUUID();
           stored.credentials[playerId] = await hash(token);
           stored.game.updatedAt = Date.now();
@@ -181,6 +186,7 @@ export class GameRoom {
   }
   private async schedule(stored: StoredRoom) {
     const connected = this.connected();
+    normalizeSessionScores(stored.game);
     syncPresence(stored.game, connected);
     for (const id of syncSpectators(stored.game, connected)) { delete stored.credentials[id]; delete stored.handled[id]; }
     promoteQueued(stored.game, connected);
@@ -224,6 +230,14 @@ export class GameRoom {
           }
           // One connection owns a seat; old tabs cannot keep issuing actions.
           for (const old of this.ctx.getWebSockets()) if (old !== ws && (old.deserializeAttachment() as Session)?.playerId === payload.playerId) old.close(4001, 'Your seat is open in another tab.');
+          // Seat credentials authorize the connection; browser identity only links session scores.
+          normalizeSessionScores(stored.game);
+          const member = [...stored.game.players, ...(stored.game.spectators ?? [])].find(p => p.id === payload.playerId);
+          if (member && validGuestToken(payload.guestToken)) {
+            const identity = await hash(payload.guestToken);
+            const scoreId = bindSessionScore(stored.game, member.id, member.name);
+            stored.identities ??= {}; stored.identities[identity] ??= scoreId;
+          }
           a.playerId = payload.playerId; ws.serializeAttachment(a);
           syncPresence(stored.game, this.connected(), now);
           assignConnectedHost(stored.game, this.connected());

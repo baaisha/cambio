@@ -1,3 +1,4 @@
+import { normalizeSessionScores, sessionScoreId, sessionScoreView } from './session-scores';
 export type Suit = 'clubs' | 'diamonds' | 'hearts' | 'spades' | 'joker';
 export type Card = { rank: number; suit: Suit };
 export type Target = { playerId: string; slot: number };
@@ -24,6 +25,7 @@ export type Game = {
   resultPlayers?: Player[];
   resultWinners?: { id: string; name: string }[];
   disconnectedAt?: Record<string, number>;
+  scoreIds?: Record<string, string>;
   session?: { games: number; players: Record<string, SessionScore> };
   code: string; hostId: string; players: Player[];
   phase: 'lobby' | 'peek' | 'playing' | 'ending' | 'finished';
@@ -100,7 +102,7 @@ export function newGame(code: string, id: string, name: string, now = Date.now()
   };
 }
 function begin(game: Game): void {
-  const candidates = game.players.filter(p => game.winners.includes(p.id));
+  const candidates = game.players.filter(p => game.winners.some(id => sessionScoreId(game, id) === sessionScoreId(game, p.id)));
   const starter = candidates.length ? candidates[randomIndex(candidates.length)] : game.players[randomIndex(game.players.length)];
   game.active = game.players.findIndex(p => p.id === starter.id);
   game.deck = shuffledDeck();
@@ -160,9 +162,11 @@ export function finishIfDue(game: Game, now = Date.now()): boolean {
   game.winners = game.players.filter(p => score(p) === lowest).map(p => p.id);
   game.resultWinners = game.players.filter(p => game.winners.includes(p.id)).map(p => ({ id: p.id, name: p.name }));
   game.session ??= { games: 0, players: {} };
+  normalizeSessionScores(game);
   game.session.games++;
   for (const player of game.players) {
-    const stats = game.session.players[player.id] ??= { id: player.id, name: player.name, wins: 0, ties: 0, points: 0, games: 0 };
+    const scoreId = sessionScoreId(game, player.id);
+    const stats = game.session.players[scoreId] ??= { id: scoreId, name: player.name, wins: 0, ties: 0, points: 0, games: 0 };
     stats.name = player.name; stats.games++; stats.points += score(player);
     if (game.winners.includes(player.id)) {
       if (game.winners.length === 1) stats.wins++;
@@ -434,7 +438,7 @@ export function viewFor(game: Game, id: string, now = Date.now()) {
       id: p.id, name: p.name, score: score(p), hand: p.hand.map(card => card ? { face: card } : null),
       ready: game.players.find(seat => seat.id === p.id)?.ready ?? false,
     })) : [],
-    resultWinners: game.resultWinners?.length ? game.resultWinners : game.winners.map(id => ({ id, name: game.players.find(p => p.id === id)?.name ?? game.session?.players[id]?.name ?? 'The winner' })),
+    resultWinners: game.resultWinners?.length ? game.resultWinners : game.winners.map(id => ({ id, name: game.players.find(p => p.id === id)?.name ?? game.session?.players[sessionScoreId(game, id)]?.name ?? 'The winner' })),
     drawn: isActive ? game.drawn : null, hasDrawn: !!game.drawn,
     power: power ? { rank: power.rank, step: power.step, reveals: power.reveals,
       received: (power.received ?? []).filter(r => {
@@ -447,7 +451,7 @@ export function viewFor(game: Game, id: string, now = Date.now()) {
     lastSwap: game.lastSwap ?? null,
     motions: game.motions ?? [],
     queenRule: game.queenRule ?? 'look-then-swap',
-    session: { games: game.session?.games ?? 0, players: Object.values(game.session?.players ?? {}) },
+    session: sessionScoreView(game),
   };
 }
 export type GameView = ReturnType<typeof viewFor> & { connectedIds: string[] };
