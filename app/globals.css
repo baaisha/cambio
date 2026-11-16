@@ -227,10 +227,11 @@ button.playing-card:active:not(:disabled) { transform: translateY(-2px); }
 .deck-stack::after { left: 4px; top: 4px; z-index: -2; }
 .pile-label { color: #d7e6dc; font-size: 10px; padding-top: 9px; display: inline-flex; align-items: center; gap: 6px; }
 .pile-label b { font-weight: 500; background: #153c2b80; padding: 0 5px; border-radius: 4px; color: #edf4ee; font-variant-numeric: tabular-nums; }
-.table-message { color: #d5e5d9; font-size: 11px; min-height: 24px; padding-top: 6px; display: flex; align-items: center; gap: 10px; justify-content: center; text-align: center; }
-.recent-actions { display: flex; flex-direction: column; gap: 3px; width: 240px; max-width: 100%; }
+.table-message { width: max-content; max-width: 440px; white-space: nowrap; color: #d5e5d9; font-size: 11px; min-height: 24px; padding-top: 6px; display: flex; align-items: center; gap: 10px; justify-content: center; text-align: center; }
+.recent-actions { display: flex; flex-direction: row; gap: 10px; min-width: 0; max-width: 100%; }
+.last-action, .recent-actions span, .cambio-badge > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .recent-actions span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; line-height: 13px; }
-.cambio-badge { display: inline-flex; align-items: center; gap: 4px; color: #f3dfa2; }
+.cambio-badge { flex-shrink: 0; max-width: 55%; display: inline-flex; align-items: center; gap: 4px; color: #f3dfa2; }
 .your-area { position: absolute; bottom: 9px; left: 0; width: 100%; display: flex; justify-content: safe center; padding: 15px 20px 14px; }
 .own-hand { --hand-card-width: 66px; --hand-card-height: 90px; --hand-gap: 8px; isolation: isolate; }
 .own-hand .player-heading { justify-content: center; }
@@ -245,6 +246,7 @@ button.playing-card:active:not(:disabled) { transform: translateY(-2px); }
 .peek-indicator { position: absolute; top: -8px; right: -8px; width: 21px; height: 21px; display: grid; place-items: center; border-radius: 50%; background: #b6ead4; color: #172f25; border: 2px solid #214332; pointer-events: none; }
 .action-bar { position: absolute; bottom: 28px; right: 32px; width: min(320px, calc(50% - 130px)); max-height: calc(100% - 375px); overflow-y: auto; display: flex; flex-direction: column; align-items: stretch; gap: 16px; z-index: 4; color: var(--on-table); scrollbar-width: thin; }
 .card-table.crowded-table { min-height: 650px; }
+.crowded-table .table-message { max-width: 300px; }
 .crowded-table .table-middle { top: 215px; left: 32%; transform: translateX(-50%); width: 190px; }
 .crowded-table .action-bar { top: 200px; bottom: auto; left: 66%; right: auto; transform: translateX(-50%); width: min(260px, 26%); max-height: calc(100% - 475px); gap: 10px; }
 .crowded-table .action-instruction h2 { font-size: 13px; }
