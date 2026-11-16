@@ -102,7 +102,7 @@ export default function Home() {
   const [transport] = useState(() => new GameTransport(API));
   const [route, setRoute] = useState<GameRoute>('direct');
   useEffect(() => {
-    const key = `cambio:route:${API}`;
+    const key = `cambio:route:v2:${API}`;
     transport.onChange = next => { setRoute(next); try { sessionStorage.setItem(key, next); } catch {} };
     try { if (sessionStorage.getItem(key) === 'relay') transport.useRelay(); } catch {}
     return () => { transport.onChange = undefined; };

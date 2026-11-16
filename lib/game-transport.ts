@@ -6,7 +6,7 @@ export class GameTransport {
   private checked = false;
   private selecting: Promise<void> | null = null;
   onChange?: (route: GameRoute) => void;
-  constructor(private direct: string, private fetcher: typeof fetch = fetch, private probeMs = 2200) {}
+  constructor(private direct: string, private fetcher: typeof fetch = (input, init) => globalThis.fetch(input, init), private probeMs = 2200) {}
   useRelay() {
     if (this.route === 'relay') return;
     this.route = 'relay'; this.checked = false; this.onChange?.('relay');

@@ -67,3 +67,19 @@ test('forwarded IP requires a valid, unexpired signature from this production Ve
   await assert.rejects(verifiedRelayIp(headers, async () => publicKey));
   headers.set('x-cambio-relay-token', 'forged'); await assert.rejects(verifiedRelayIp(headers));
 });
+
+test('default browser fetch keeps its global receiver instead of the transport instance', async () => {
+  const original = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = async function (this: unknown, input) {
+    assert.equal(this, globalThis, 'Browser fetch rejects an incompatible receiver');
+    calls.push(String(input));
+    return healthy();
+  };
+  try {
+    const transport = new GameTransport('https://worker.example');
+    await transport.request('/health');
+    assert.equal(transport.route, 'direct');
+    assert.deepEqual(calls, ['https://worker.example/health', 'https://worker.example/health']);
+  } finally { globalThis.fetch = original; }
+});
