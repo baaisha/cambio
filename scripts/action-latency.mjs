@@ -38,6 +38,18 @@ async function act(client, action) {
     client.pending = { id, action: action.type, started, resolve: () => { clearTimeout(timeout); resolve(); }, reject: e => { clearTimeout(timeout); reject(e); } };
     client.ws.send(JSON.stringify({ type: 'action', id, action, version: client.state.version }));
   });
+  const version = client.state.version;
+  const deadline = Date.now() + 10000;
+  while (clients.some(c => !c.state || c.state.version < version)) {
+    if (Date.now() > deadline) throw new Error('Other player state did not catch up');
+    await pause(10);
+  }
+  const version = client.state.version;
+  const deadline = Date.now() + 10000;
+  while (clients.some(c => !c.state || c.state.version < version)) {
+    if (Date.now() > deadline) throw new Error('Peer state synchronization timeout');
+    await pause(10);
+  }
   await pause(80);
 }
 try {
