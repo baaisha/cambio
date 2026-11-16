@@ -1,5 +1,6 @@
 import { DISCONNECT_GRACE_MS, applyAction, finishIfDue, newGame, syncPresence, viewFor, type Action, type Game } from '../lib/game.ts';
 import { assignConnectedHost, joinRoom, promoteQueued, setQueued, switchToSpectating, syncSpectators } from '../lib/membership.ts';
+import { verifiedRelayIp } from '../lib/relay-identity.ts';
 import { diagnosticNonce } from '../lib/connection-check.ts';
 import { createRoomCode, validRoomCode } from '../lib/room-code.ts';
 
@@ -35,6 +36,7 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     let response: Response;
     try {
+      const relayIp = await verifiedRelayIp(request.headers);
       if (url.pathname === '/diagnostics/echo' && request.method === 'GET') {
         if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'WebSocket connection required.' }, 426);
         const pair = new WebSocketPair(), socket = pair[1];
@@ -59,7 +61,7 @@ export default {
         if (Number(request.headers.get('Content-Length') ?? 0) > 2048) return json({ error: 'Request too large.' }, 413);
         const body = await request.text();
         if (body.length > 2048) return json({ error: 'Request too large.' }, 413);
-        const ip = request.headers.get('CF-Connecting-IP') ?? 'local';
+        const ip = relayIp ?? request.headers.get('CF-Connecting-IP') ?? 'local';
         const limiter = env.ROOMS.get(env.ROOMS.idFromName(`rate:${await hash(ip)}`));
         const rate = await limiter.fetch('https://internal/limit', { method: 'POST' });
         if (!rate.ok) response = json({ error: 'Too many room requests. Try again in a minute.' }, 429);

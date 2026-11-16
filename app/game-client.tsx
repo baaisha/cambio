@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
 import { cardLabel, rankLabel, DISCONNECT_GRACE_MS, type Action, type Card, type GameView, type Target } from '@/lib/game';
 import { animateMotion, animateSwap } from '@/lib/swap-animation';
+import { GameTransport, type GameRoute } from '@/lib/game-transport';
 import { normalizeRoomCode, validRoomCode } from '@/lib/room-code';
 import { handColumns, handPosition, handViewport, tableLayout, resultTitle, turnTitle, matchActivity } from '@/lib/table-layout';
 
@@ -98,6 +99,14 @@ const RULE_GROUPS = [
 ];
 
 export default function Home() {
+  const [transport] = useState(() => new GameTransport(API));
+  const [route, setRoute] = useState<GameRoute>('direct');
+  useEffect(() => {
+    const key = `cambio:route:${API}`;
+    transport.onChange = next => { setRoute(next); try { sessionStorage.setItem(key, next); } catch {} };
+    try { if (sessionStorage.getItem(key) === 'relay') transport.useRelay(); } catch {}
+    return () => { transport.onChange = undefined; };
+  }, [transport]);
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [seat, setSeat] = useState<Seat | null>(null);
@@ -137,7 +146,7 @@ export default function Home() {
     setRoomsLoading(true); setRoomsError('');
     async function refresh() {
       try {
-        const response = await fetch(`${API.replace(/\/$/, '')}/rooms`, { cache: 'no-store', signal: controller.signal });
+        const response = await transport.request('/rooms', { signal: controller.signal });
         if (!response.ok) throw new Error('Could not load rooms');
         const data = await response.json();
         if (!controller.signal.aborted) { setListedRooms(data.rooms); setRoomsError(''); }
@@ -164,7 +173,7 @@ export default function Home() {
     async function check() {
       try {
         if (!API) throw new Error('No server configured');
-        const response = await fetch(`${API.replace(/\/$/, '')}/health`, { cache: 'no-store', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]) });
+        const response = await transport.request('/health', { signal: controller.signal });
         const body = await response.json();
         if (!response.ok || body.ok !== true) throw new Error('Server unavailable');
         if (!disposed) setServerHealth('connected');
@@ -211,19 +220,29 @@ export default function Home() {
   useEffect(() => {
     if (!seat || !API) return;
     let disposed = false, retry = 0, timer: ReturnType<typeof setTimeout>;
-    let current: WebSocket;
-    function connect() {
+    let authTimer: ReturnType<typeof setTimeout>, pongTimer: ReturnType<typeof setTimeout>;
+    let current: WebSocket | undefined;
+    function reconnect(delay: number) {
+      if (disposed) return;
+      setConnection('reconnecting'); timer = setTimeout(connect, delay);
+    }
+    async function connect() {
       if (disposed) return;
       setConnection(retry ? 'reconnecting' : 'connecting');
-      const base = API.replace(/^http/, 'ws').replace(/\/$/, '');
-      current = new WebSocket(`${base}/rooms/${seat!.code}/ws`);
-      socket.current = current;
-      current.onopen = () => current.send(JSON.stringify({ type: 'auth', playerId: seat!.playerId, token: seat!.token }));
-      current.onmessage = event => {
-        if (event.data === 'pong') return;
+      try { await transport.ensure(); }
+      catch { reconnect(Math.min(1000 * 2 ** retry++, 10000)); return; }
+      if (disposed) return;
+      const candidate = new WebSocket(transport.socketUrl(seat!.code, window.location.origin));
+      current = candidate; socket.current = candidate;
+      authTimer = setTimeout(() => candidate.close(), transport.route === 'direct' ? 4000 : 12000);
+      candidate.onopen = () => candidate.send(JSON.stringify({ type: 'auth', playerId: seat!.playerId, token: seat!.token }));
+      candidate.onmessage = event => {
+        if (disposed || current !== candidate) return;
+        if (event.data === 'pong') { clearTimeout(pongTimer); return; }
         let data;
         try { data = JSON.parse(event.data); } catch { return; }
         if (data.type === 'state') {
+          clearTimeout(authTimer); clearTimeout(pongTimer);
           const incoming = data.state as GameView;
           retry = 0; serverOffset.current = incoming.serverTime - Date.now();
           latest.current = incoming; setState(incoming); setConnection('connected');
@@ -239,25 +258,31 @@ export default function Home() {
           pendingId.current = null; setPending(false); setError(data.error); setSelected(null);
         }
       };
-      current.onclose = event => {
-        if (disposed) return;
-        pendingId.current = null; setPending(false);
+      candidate.onclose = event => {
+        clearTimeout(authTimer); clearTimeout(pongTimer);
+        if (disposed || current !== candidate) return;
+        pendingId.current = null; setPending(false); setSelected(null);
         if ([4001, 4003, 4004].includes(event.code)) {
           setConnection('closed'); setError(event.reason || 'Your connection has closed.');
           if (event.code !== 4001) { try { localStorage.removeItem(`cambio:seat:${seat!.code}`); } catch {} }
           return;
         }
-        setConnection('reconnecting');
-        timer = setTimeout(connect, Math.min(1000 * 2 ** retry++, 10000));
+        if (transport.route === 'direct') { transport.useRelay(); reconnect(150); }
+        else reconnect(event.code === 1012 ? 150 : Math.min(1000 * 2 ** retry++, 10000));
       };
-      current.onerror = () => current.close();
+      candidate.onerror = () => candidate.close();
     }
     connect();
-    const heartbeat = setInterval(() => { if (current?.readyState === WebSocket.OPEN) current.send('ping'); }, 25000);
+    const heartbeat = setInterval(() => {
+      const candidate = current;
+      if (candidate?.readyState !== WebSocket.OPEN) return;
+      candidate.send('ping');
+      clearTimeout(pongTimer); pongTimer = setTimeout(() => candidate.close(), 7000);
+    }, 10000);
     const refresh = () => { if (document.visibilityState === 'visible' && current?.readyState === WebSocket.OPEN) current.send(JSON.stringify({ type: 'sync' })); };
     document.addEventListener('visibilitychange', refresh);
-    return () => { disposed = true; clearTimeout(timer); clearInterval(heartbeat); document.removeEventListener('visibilitychange', refresh); current?.close(); socket.current = null; };
-  }, [seat]);
+    return () => { disposed = true; clearTimeout(timer); clearTimeout(authTimer); clearTimeout(pongTimer); clearInterval(heartbeat); document.removeEventListener('visibilitychange', refresh); current?.close(); socket.current = null; };
+  }, [seat, transport]);
   useEffect(() => {
     if (!state?.deadline && !Object.keys(state?.disconnectedAt ?? {}).length && !state?.motions?.length) return;
     setClock(Date.now());
@@ -350,7 +375,7 @@ export default function Home() {
     if (!API) { setError('The game server is unavailable. Please try again later.'); return; }
     setBusy(true); setError('');
     try {
-      const response = await fetch(`${API.replace(/\/$/, '')}${create ? '/rooms' : `/rooms/${clean}/join`}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim(), ...(!create && selectedRoom ? { roomId: selectedRoom.id } : {}) }), signal: AbortSignal.timeout(10000) });
+      const response = await transport.request(create ? '/rooms' : `/rooms/${clean}/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim(), ...(!create && selectedRoom ? { roomId: selectedRoom.id } : {}) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Unable to join. Try again.');
       const next = result as Seat;
@@ -528,12 +553,12 @@ export default function Home() {
   return <div className={`app ${seat ? 'at-table' : ''}`}>
     <header className="site-header">
       <button className="wordmark" onClick={() => { if (seat) leave(); else window.history.replaceState({}, '', '/'); }} aria-label="Cambio home"><Icon name="cards" size={26}/><span>cambio</span></button>
-      <div className="header-right">{seat && <span role="status" className={`connection-status ${online ? '' : connection === 'closed' ? 'failed' : 'offline'}`}><i/>{online ? 'Connected' : connection === 'closed' ? 'Disconnected' : 'Connecting'}</span>}<button className="text-button" onClick={() => setRules(true)}>How to play</button>{seat && <button className="icon-button" title="Leave table (your seat is saved)" aria-label="Leave table" onClick={leave}><Icon name="exit"/></button>}</div>
+      <div className="header-right">{seat && <span role="status" className={`connection-status ${online ? '' : connection === 'closed' ? 'failed' : 'offline'}`}><i/>{online ? route === 'relay' ? 'Connected · relay' : 'Connected' : connection === 'closed' ? 'Disconnected' : 'Connecting'}</span>}<button className="text-button" onClick={() => setRules(true)}>How to play</button>{seat && <button className="icon-button" title="Leave table (your seat is saved)" aria-label="Leave table" onClick={leave}><Icon name="exit"/></button>}</div>
     </header>
 
     {!seat ? <main className="home">
       <section className="welcome-panel">
-        <span role="status" className={`connection-status home-server-status ${serverHealth === 'failed' ? 'failed' : serverHealth === 'connecting' ? 'offline' : ''}`}><i/>{serverHealth === 'connected' ? 'Connected to server' : serverHealth === 'failed' ? 'Failed to connect' : 'Connecting to server'}</span>
+        <span role="status" className={`connection-status home-server-status ${serverHealth === 'failed' ? 'failed' : serverHealth === 'connecting' ? 'offline' : ''}`}><i/>{serverHealth === 'connected' ? route === 'relay' ? 'Connected to server · relay' : 'Connected to server' : serverHealth === 'failed' ? 'Failed to connect' : 'Connecting to server'}</span>
         <h1>Cambio,<br/>with friends</h1>
         <p className="home-description">Create a private table or join with a room code.<br/>Remember your cards. Aim for the lowest score.</p>
         <form className="join-form" onSubmit={e => { e.preventDefault(); openJoin(); }}>
