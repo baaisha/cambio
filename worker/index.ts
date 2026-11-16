@@ -1,5 +1,6 @@
 import { DISCONNECT_GRACE_MS, applyAction, finishIfDue, newGame, syncPresence, viewFor, type Action, type Game } from '../lib/game.ts';
 import { assignConnectedHost, joinRoom, promoteQueued, setQueued, switchToSpectating, syncSpectators } from '../lib/membership.ts';
+import { RoomDirectoryPublisher, type DirectoryPublication } from '../lib/room-directory.ts';
 import { verifiedRelayIp } from '../lib/relay-identity.ts';
 import { diagnosticNonce } from '../lib/connection-check.ts';
 import { createRoomCode, validRoomCode } from '../lib/room-code.ts';
@@ -89,7 +90,19 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 export class GameRoom {
+  private directory: RoomDirectoryPublisher;
   constructor(private ctx: DurableObjectState, private env: Env) {
+    this.directory = new RoomDirectoryPublisher({
+      read: () => this.ctx.storage.get<DirectoryPublication>('directory-publication'),
+      save: value => this.ctx.storage.put('directory-publication', value),
+      send: async listing => {
+        const response = await this.env.ROOMS.get(this.env.ROOMS.idFromName('directory')).fetch('https://internal/directory', {
+          method: 'POST', body: JSON.stringify(listing), signal: AbortSignal.timeout(2000),
+        });
+        await response.body?.cancel();
+        if (!response.ok) throw new Error('Directory unavailable');
+      },
+    });
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
   async fetch(request: Request): Promise<Response> {
@@ -136,7 +149,6 @@ export class GameRoom {
           stored.directoryId ??= crypto.randomUUID();
           stored.credentials[playerId] = await hash(token);
           stored.game.updatedAt = Date.now();
-          await this.ctx.storage.put('room', stored);
           await this.schedule(stored);
           this.broadcast(stored);
           return json({ code: stored.game.code, playerId, token });
@@ -175,7 +187,6 @@ export class GameRoom {
     assignConnectedHost(stored.game, connected);
     stored.directoryId ??= crypto.randomUUID();
     await this.ctx.storage.put('room', stored);
-    await this.publishListing(stored);
     const now = Date.now(), times = [stored.game.updatedAt + DAY];
     if (stored.game.phase === 'ending' && stored.game.deadline && !stored.game.transfer) times.push(Math.max(now + 1, stored.game.deadline));
     if (stored.game.flash && stored.game.flash.until > now) times.push(stored.game.flash.until);
@@ -185,16 +196,15 @@ export class GameRoom {
       if (!a?.playerId) times.push(Math.max(now + 1, a.created + 15000));
     }
     await this.ctx.storage.setAlarm(Math.min(...times));
+    this.publishListing(stored);
   }
-  private async publishListing(stored: StoredRoom) {
+  private publishListing(stored: StoredRoom) {
     const game = stored.game;
-    try {
-      await this.env.ROOMS.get(this.env.ROOMS.idFromName('directory')).fetch('https://internal/directory', {
-        method: 'POST', body: JSON.stringify({ id: stored.directoryId, hostName: game.players.find(p => p.id === game.hostId)?.name ?? 'Host', players: game.players.length,
-          gameNumber: Math.max(1, game.gameNumber), phase: game.phase,
-          updatedAt: game.updatedAt, private: true, connected: this.connected().length > 0 }),
-      });
-    } catch { /* Room play remains available if the directory is temporarily unavailable. */ }
+    this.ctx.waitUntil(this.directory.enqueue({
+      id: stored.directoryId!, hostName: game.players.find(p => p.id === game.hostId)?.name ?? 'Host',
+      players: game.players.length, gameNumber: Math.max(1, game.gameNumber), phase: game.phase,
+      updatedAt: game.updatedAt, private: true, connected: this.connected().length > 0,
+    }));
   }
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     await this.ctx.blockConcurrencyWhile(async () => {
@@ -217,7 +227,6 @@ export class GameRoom {
           a.playerId = payload.playerId; ws.serializeAttachment(a);
           syncPresence(stored.game, this.connected(), now);
           assignConnectedHost(stored.game, this.connected());
-          await this.ctx.storage.put('room', stored);
           await this.schedule(stored); this.broadcast(stored); return;
         }
         if (!a.playerId || !stored.credentials[a.playerId]) { ws.close(4003, 'Sign in to your seat first.'); return; }
@@ -239,7 +248,6 @@ export class GameRoom {
           else applyAction(next.game, a.playerId, action, now);
           if (action.type === 'remove') { delete next.credentials[action.playerId]; delete next.handled[action.playerId]; }
           next.handled[a.playerId] = [...handled, payload.id].slice(-128);
-          await this.ctx.storage.put('room', next);
           await this.schedule(next);
           ws.send(JSON.stringify({ type: 'ack', id: payload.id }));
           this.broadcast(next);
@@ -280,9 +288,8 @@ export class GameRoom {
         const a = ws.deserializeAttachment() as Session;
         if (!a.playerId && now - a.created >= 15000) ws.close(4003, 'Authentication timed out.');
       }
-      let changed = finishIfDue(stored.game, now);
-      if (stored.game.flash && now >= stored.game.flash.until) { stored.game.flash = null; changed = true; }
-      if (changed) await this.ctx.storage.put('room', stored);
+      finishIfDue(stored.game, now);
+      if (stored.game.flash && now >= stored.game.flash.until) stored.game.flash = null;
       await this.schedule(stored); this.broadcast(stored);
     });
   }
