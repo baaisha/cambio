@@ -23,11 +23,11 @@ Pending exports retry by alarm with backoff, from one minute up to one hour. Roo
 Run from the repository with your existing Cloudflare login:
 
 ```sh
-npx wrangler d1 execute cambio-analytics --remote --file docs/analytics-queries.sql
+npx wrangler d1 execute cambio-analytics --remote --command "SELECT count(*) AS games_played FROM games;"
 npx wrangler d1 export cambio-analytics --remote --output /tmp/cambio-analytics.sql
 ```
 
-Use `--local` for local development. Apply schema changes with:
+Copy individual queries from `docs/analytics-queries.sql` into `--command` to return their rows. (`--file` uses the SQL import path and returns an execution summary.) Use `--local` for local development. Apply schema changes with:
 
 ```sh
 npx wrangler d1 migrations apply cambio-analytics --local
