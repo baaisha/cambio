@@ -1,3 +1,4 @@
+import { ANALYTICS_PREFIX, completedGame, exportAnalytics, type CompletedGame } from '../lib/analytics.ts';
 import { bindSessionScore, normalizeSessionScores, sessionScoreId, validGuestToken } from '../lib/session-scores.ts';
 import { DISCONNECT_GRACE_MS, applyAction, finishIfDue, newGame, syncPresence, viewFor, type Action, type Game } from '../lib/game.ts';
 import { assignConnectedHost, joinRoom, promoteQueued, setQueued, switchToSpectating, syncSpectators } from '../lib/membership.ts';
@@ -6,8 +7,8 @@ import { verifiedRelayIp } from '../lib/relay-identity.ts';
 import { diagnosticNonce } from '../lib/connection-check.ts';
 import { createRoomCode, validRoomCode } from '../lib/room-code.ts';
 
-interface Env { ROOMS: DurableObjectNamespace; ALLOWED_ORIGINS: string }
-type StoredRoom = { game: Game; credentials: Record<string, string>; handled: Record<string, string[]>; directoryId?: string; identities?: Record<string, string> };
+interface Env { ANALYTICS?: D1Database; ROOMS: DurableObjectNamespace; ALLOWED_ORIGINS: string }
+type StoredRoom = { game: Game; credentials: Record<string, string>; handled: Record<string, string[]>; directoryId?: string; identities?: Record<string, string>; analyticsPlayers?: Record<string, string>; analyticsCaptured?: number; analyticsRetryAt?: number; analyticsRetries?: number };
 type RoomListing = { id: string; hostName: string; players: number; gameNumber: number; phase: Game['phase']; updatedAt: number; private: true };
 type Session = { playerId?: string; created: number; bucket: number; count: number };
 const DAY = 24 * 60 * 60 * 1000;
@@ -92,6 +93,8 @@ export default {
 
 export class GameRoom {
   private directory: RoomDirectoryPublisher;
+  private analyticsWork: Promise<void> | null = null;
+  private analyticsNeeded = false;
   constructor(private ctx: DurableObjectState, private env: Env) {
     this.directory = new RoomDirectoryPublisher({
       read: () => this.ctx.storage.get<DirectoryPublication>('directory-publication'),
@@ -137,7 +140,14 @@ export class GameRoom {
           return json({ ok: true });
         }
         let stored = await this.ctx.storage.get<StoredRoom>('room');
-        if (stored && Date.now() - stored.game.updatedAt > DAY) { await this.ctx.storage.deleteAll(); stored = undefined; }
+        if (stored && Date.now() - stored.game.updatedAt > DAY) {
+          if (await this.pendingAnalytics()) {
+            this.analyticsNeeded = true; this.flushAnalytics();
+            await this.ctx.storage.setAlarm(Date.now() + 3600000);
+            return json({ error: 'Room expired.' }, url.pathname === '/create' ? 409 : 404);
+          }
+          await this.ctx.storage.deleteAll(); stored = undefined;
+        }
         if (url.pathname === '/create' || url.pathname === '/join') {
           if (url.pathname === '/create' && stored) return json({ error: 'Room code collision. Create another room.' }, 409);
           if (url.pathname === '/join' && !stored) return json({ error: 'That room does not exist or has expired. Check the code.' }, 404);
@@ -150,7 +160,7 @@ export class GameRoom {
           else { await this.schedule(stored); stored = structuredClone(stored); joinRoom(stored.game, playerId, name); }
           const identity = validGuestToken(body.guestToken) ? await hash(body.guestToken) : undefined;
           const scoreId = bindSessionScore(stored.game, playerId, name, identity ? stored.identities?.[identity] : undefined);
-          if (identity) { stored.identities ??= {}; stored.identities[identity] = scoreId; }
+          if (identity) { stored.identities ??= {}; stored.identities[identity] = scoreId; stored.analyticsPlayers ??= {}; stored.analyticsPlayers[playerId] = `browser:${identity}`; }
           stored.directoryId ??= crypto.randomUUID();
           stored.credentials[playerId] = await hash(token);
           stored.game.updatedAt = Date.now();
@@ -192,8 +202,20 @@ export class GameRoom {
     promoteQueued(stored.game, connected);
     assignConnectedHost(stored.game, connected);
     stored.directoryId ??= crypto.randomUUID();
-    await this.ctx.storage.put('room', stored);
+    const writes: Record<string, unknown> = { room: stored };
+    if (this.env.ANALYTICS && stored.game.finishedAt !== undefined && stored.game.gameNumber > (stored.analyticsCaptured ?? 0)) {
+      const event = completedGame(stored.game, stored.directoryId, stored.analyticsPlayers);
+      if (event) {
+        writes[`${ANALYTICS_PREFIX}${event.gameNumber}`] = event;
+        stored.analyticsCaptured = event.gameNumber;
+        stored.analyticsRetryAt ??= Date.now() + 60000;
+        this.analyticsNeeded = true;
+      }
+    }
+    // Room state and its export outbox are committed atomically before acknowledging actions.
+    await this.ctx.storage.put(writes);
     const now = Date.now(), times = [stored.game.updatedAt + DAY];
+    if (stored.analyticsRetryAt) times.push(Math.max(now + 1, stored.analyticsRetryAt));
     if (stored.game.phase === 'ending' && stored.game.deadline && !stored.game.transfer) times.push(Math.max(now + 1, stored.game.deadline));
     if (stored.game.flash && stored.game.flash.until > now) times.push(stored.game.flash.until);
     for (const spectator of stored.game.spectators ?? []) if (spectator.disconnectedAt !== undefined) times.push(Math.max(now + 1, spectator.disconnectedAt + DISCONNECT_GRACE_MS));
@@ -203,6 +225,31 @@ export class GameRoom {
     }
     await this.ctx.storage.setAlarm(Math.min(...times));
     this.publishListing(stored);
+    this.flushAnalytics();
+  }
+  private flushAnalytics() {
+    if (!this.env.ANALYTICS || !this.analyticsNeeded || this.analyticsWork) return;
+    this.analyticsWork = Promise.resolve().then(async () => {
+      try {
+        while (this.analyticsNeeded) {
+          this.analyticsNeeded = false;
+          const entries = await this.ctx.storage.list<CompletedGame>({ prefix: ANALYTICS_PREFIX, limit: 25 });
+          await exportAnalytics(entries, {
+            write: async statements => {
+              const results = await this.env.ANALYTICS!.batch(statements.map(s => this.env.ANALYTICS!.prepare(s.sql).bind(...s.params)));
+              if (results.some(r => !r.success)) throw new Error('Analytics batch failed');
+            },
+            remove: key => this.ctx.storage.delete(key),
+          });
+          if (entries.size === 25) this.analyticsNeeded = true;
+        }
+      } catch { console.warn('Anonymous game analytics export deferred; the durable outbox will retry.'); }
+      finally { this.analyticsWork = null; }
+    });
+    this.ctx.waitUntil(this.analyticsWork);
+  }
+  private async pendingAnalytics() {
+    return (await this.ctx.storage.list({ prefix: ANALYTICS_PREFIX, limit: 1 })).size > 0;
   }
   private publishListing(stored: StoredRoom) {
     const game = stored.game;
@@ -237,6 +284,7 @@ export class GameRoom {
             const identity = await hash(payload.guestToken);
             const scoreId = bindSessionScore(stored.game, member.id, member.name);
             stored.identities ??= {}; stored.identities[identity] ??= scoreId;
+            stored.analyticsPlayers ??= {}; stored.analyticsPlayers[member.id] = `browser:${identity}`;
           }
           a.playerId = payload.playerId; ws.serializeAttachment(a);
           syncPresence(stored.game, this.connected(), now);
@@ -296,7 +344,18 @@ export class GameRoom {
       const now = Date.now();
       if (now - stored.game.updatedAt >= DAY) {
         for (const ws of this.ctx.getWebSockets()) ws.close(4004, 'Room expired after 24 hours of inactivity.');
-        await this.ctx.storage.deleteAll(); return;
+        if (await this.pendingAnalytics()) {
+          this.analyticsNeeded = true; this.flushAnalytics();
+          await this.ctx.storage.setAlarm(now + 3600000);
+        } else await this.ctx.storage.deleteAll();
+        return;
+      }
+      if (stored.analyticsRetryAt && now >= stored.analyticsRetryAt) {
+        if (await this.pendingAnalytics()) {
+          this.analyticsNeeded = true;
+          stored.analyticsRetries = (stored.analyticsRetries ?? 0) + 1;
+          stored.analyticsRetryAt = now + Math.min(3600000, 60000 * 2 ** Math.min(stored.analyticsRetries, 6));
+        } else { delete stored.analyticsRetryAt; delete stored.analyticsRetries; }
       }
       for (const ws of this.ctx.getWebSockets()) {
         const a = ws.deserializeAttachment() as Session;

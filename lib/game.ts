@@ -25,6 +25,8 @@ export type Game = {
   resultPlayers?: Player[];
   resultWinners?: { id: string; name: string }[];
   disconnectedAt?: Record<string, number>;
+  startedAt?: number;
+  finishedAt?: number;
   scoreIds?: Record<string, string>;
   session?: { games: number; players: Record<string, SessionScore> };
   code: string; hostId: string; players: Player[];
@@ -101,7 +103,8 @@ export function newGame(code: string, id: string, name: string, now = Date.now()
     winners: [], gameNumber: 0, version: 0, message: 'Waiting for friends.', updatedAt: now, flash: null, lastSwap: null, queenRule: 'look-then-swap',
   };
 }
-function begin(game: Game): void {
+function begin(game: Game, now = Date.now()): void {
+  game.startedAt = now; delete game.finishedAt;
   const candidates = game.players.filter(p => game.winners.some(id => sessionScoreId(game, id) === sessionScoreId(game, p.id)));
   const starter = candidates.length ? candidates[randomIndex(candidates.length)] : game.players[randomIndex(game.players.length)];
   game.active = game.players.findIndex(p => p.id === starter.id);
@@ -156,6 +159,7 @@ function finishTurn(game: Game, now: number): void {
 export function finishIfDue(game: Game, now = Date.now()): boolean {
   if (game.phase !== 'ending' || game.deadline === null || now < game.deadline || game.transfer) return false;
   game.phase = 'finished';
+  game.finishedAt = now;
   game.resultPlayerIds = game.players.map(p => p.id);
   game.resultPlayers = structuredClone(game.players);
   const lowest = Math.min(...game.players.map(score));
@@ -244,11 +248,11 @@ export function applyAction(game: Game, id: string, action: Action, now = Date.n
   } else if (action.type === 'ready') {
     ensure(game.phase === 'lobby' || game.phase === 'finished', 'The game is already in progress.');
     player.ready = !player.ready;
-    if (game.phase === 'finished' && game.players.length >= 2 && game.players.every(p => p.ready)) begin(game);
+    if (game.phase === 'finished' && game.players.length >= 2 && game.players.every(p => p.ready)) begin(game, now);
   } else if (action.type === 'start') {
     ensure(id === game.hostId, 'Only the host can start the first game.');
     ensure(game.phase === 'lobby' && game.players.length >= 2 && game.players.every(p => p.ready), 'At least two players must be ready.');
-    begin(game);
+    begin(game, now);
   } else if (action.type === 'remove') {
     ensure(id === game.hostId && (game.phase === 'lobby' || game.phase === 'finished'), 'Players can only be removed by the host between games.');
     ensure(action.playerId !== id, 'You cannot remove your own seat.');

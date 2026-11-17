@@ -182,3 +182,8 @@ Session scores use a score identity separate from temporary game seats. The brow
 Within a room, same-name history is the fallback for another device, cleared storage, or older clients. Names match case-insensitively with surrounding whitespace removed. Existing duplicate rows are merged on room use, and also render merged immediately in the public score view: wins, ties, signed points, and games played are summed, while the room's total game count remains unchanged. The migration is idempotent, retains old ID aliases for winner lookup, and persists with the authoritative room state. Two active memberships cannot share the same score identity. The previous winner's returning seat remains eligible to start the next game.
 
 `node scripts/session-identity-smoke.mjs` against the local Worker checks removed/rejoined seats, renaming, revoked credentials, subsequent game totals, and same-name fallback. No accounts or cross-room score tracking are added.
+
+
+## Permanent anonymous statistics
+
+Completed games and anonymous player results are now recorded in Cloudflare D1, independently of room expiry. Export uses a durable retry outbox and idempotent transactions in the background; game-state persistence still completes before responses. No dashboard or public query endpoint is added. See [docs/analytics.md](docs/analytics.md) for data definitions, anonymity limits, retry behavior, and query/export commands; [docs/analytics-queries.sql](docs/analytics-queries.sql) contains ready-to-run examples.
