@@ -3,7 +3,7 @@ import { sessionScoreId } from './session-scores';
 export const ANALYTICS_PREFIX = 'analytics:pending:';
 export type CompletedGame = {
   gameId: string; roomId: string; gameNumber: number; startedAt: number | null; finishedAt: number;
-  playerCount: number; turns: number; queenRule: string;
+  decks: 1 | 2; playerCount: number; turns: number; queenRule: string;
   players: { key: string; kind: 'browser' | 'room'; points: number; won: number; tied: number }[];
 };
 export type AnalyticsStatement = { sql: string; params: (string | number | null)[] };
@@ -14,7 +14,7 @@ export function completedGame(game: Game, roomId: string, identities: Record<str
   return {
     gameId: `${roomId}:${game.gameNumber}`, roomId, gameNumber: game.gameNumber,
     startedAt: game.startedAt ?? null, finishedAt: game.finishedAt, playerCount: game.resultPlayers.length,
-    turns: game.turns, queenRule: game.queenRule ?? 'look-then-swap',
+    decks: game.decks ?? 1, turns: game.turns, queenRule: game.queenRule ?? 'look-then-swap',
     players: game.resultPlayers.map(player => ({
       key: identities[player.id] ?? `room:${roomId}:${sessionScoreId(game, player.id)}`,
       kind: identities[player.id] ? 'browser' : 'room', points: score(player),
@@ -25,8 +25,8 @@ export function completedGame(game: Game, roomId: string, identities: Record<str
 }
 export async function analyticsStatements(event: CompletedGame): Promise<AnalyticsStatement[]> {
   const statements: AnalyticsStatement[] = [{
-    sql: 'INSERT INTO games (game_id,room_id,game_number,started_at,finished_at,player_count,turn_count,queen_rule) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(game_id) DO NOTHING',
-    params: [event.gameId, event.roomId, event.gameNumber, event.startedAt, event.finishedAt, event.playerCount, event.turns, event.queenRule],
+    sql: 'INSERT INTO games (game_id,room_id,game_number,started_at,finished_at,player_count,turn_count,queen_rule,decks) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(game_id) DO NOTHING',
+    params: [event.gameId, event.roomId, event.gameNumber, event.startedAt, event.finishedAt, event.playerCount, event.turns, event.queenRule, event.decks ?? 1],
   }];
   for (const [index, player] of event.players.entries()) {
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`cambio-analytics-v1:${player.key}`));

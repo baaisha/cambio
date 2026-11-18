@@ -1,6 +1,6 @@
 import { normalizeSessionScores, sessionScoreId, sessionScoreView } from './session-scores';
 export type Suit = 'clubs' | 'diamonds' | 'hearts' | 'spades' | 'joker';
-export type Card = { rank: number; suit: Suit };
+export type Card = { rank: number; suit: Suit; id?: string };
 export type Target = { playerId: string; slot: number };
 export type QueenRule = 'look-then-swap' | 'swap-then-look';
 export type SessionScore = { id: string; name: string; wins: number; ties: number; points: number; games: number };
@@ -42,6 +42,7 @@ export type Game = {
   lastSwap?: SwapEvent | null;
   motions?: MotionEvent[];
   queenRule?: QueenRule;
+  decks?: 1 | 2;
 };
 export type Action =
   | { type: 'ready' | 'start' | 'reveal-initial' | 'close-initial' | 'draw' | 'discard' | 'close-peek' | 'skip-power' | 'cambio' | 'end-game' }
@@ -54,7 +55,12 @@ export type Action =
   | { type: 'recover-player'; playerId: string }
   | { type: 'spectate' }
   | { type: 'queue-seat'; queued: boolean }
+  | { type: 'set-decks'; decks: 1 | 2 }
   | { type: 'set-queen-rule'; rule: QueenRule };
+
+function samePhysicalCard(a: Card, b: Card) {
+  return a.id || b.id ? !!a.id && a.id === b.id : a.rank === b.rank && a.suit === b.suit;
+}
 
 export function value(card: Card): number {
   return card.rank === 13 && (card.suit === 'hearts' || card.suit === 'diamonds') ? -1 : card.rank;
@@ -62,11 +68,13 @@ export function value(card: Card): number {
 export function score(player: Player): number {
   return player.hand.reduce((sum, c) => sum + (c ? value(c) : 0), 0);
 }
-export function shuffledDeck(): Card[] {
+export function shuffledDeck(copies: 1 | 2 = 1): Card[] {
   const deck: Card[] = [];
-  for (const suit of ['clubs', 'diamonds', 'hearts', 'spades'] as const)
-    for (let rank = 1; rank <= 13; rank++) deck.push({ rank, suit });
-  deck.push({ rank: 0, suit: 'joker' }, { rank: 0, suit: 'joker' });
+  for (let copy = 0; copy < copies; copy++) {
+    for (const suit of ['clubs', 'diamonds', 'hearts', 'spades'] as const)
+      for (let rank = 1; rank <= 13; rank++) deck.push({ rank, suit, id: crypto.randomUUID() });
+    deck.push({ rank: 0, suit: 'joker', id: crypto.randomUUID() }, { rank: 0, suit: 'joker', id: crypto.randomUUID() });
+  }
   for (let i = deck.length - 1; i > 0; i--) {
     const j = randomIndex(i + 1);
     [deck[i], deck[j]] = [deck[j], deck[i]];
@@ -108,7 +116,7 @@ function begin(game: Game, now = Date.now()): void {
   const candidates = game.players.filter(p => game.winners.some(id => sessionScoreId(game, id) === sessionScoreId(game, p.id)));
   const starter = candidates.length ? candidates[randomIndex(candidates.length)] : game.players[randomIndex(game.players.length)];
   game.active = game.players.findIndex(p => p.id === starter.id);
-  game.deck = shuffledDeck();
+  game.deck = shuffledDeck(game.decks ?? 1);
   for (const p of game.players) {
     p.hand = []; p.ready = false; p.initial = 'waiting'; p.initialCards = ['waiting', 'waiting'];
   }
@@ -237,6 +245,14 @@ export function applyAction(game: Game, id: string, action: Action, now = Date.n
         if (game.phase === 'playing') game.message = `${player.name} skipped ${absent.name}’s turn. Their seat is saved.`;
       } else if (owesCard && game.phase === 'playing') game.message = `${player.name} completed ${absent.name}’s card transfer.`;
     }
+  } else if (action.type === 'set-decks') {
+    ensure(id === game.hostId && (game.phase === 'lobby' || game.phase === 'finished'), 'Only the host can change decks between games.');
+    ensure(action.decks === 1 || action.decks === 2, 'Choose one or two decks.');
+    if ((game.decks ?? 1) !== action.decks) {
+      game.decks = action.decks;
+      for (const p of game.players) p.ready = false;
+      game.message = `${action.decks === 2 ? 'Two decks' : 'One deck'}. Everyone must ready up again.`;
+    }
   } else if (action.type === 'set-queen-rule') {
     ensure(id === game.hostId && (game.phase === 'lobby' || game.phase === 'finished'), 'Only the host can change the Queen rule between games.');
     ensure(action.rule === 'look-then-swap' || action.rule === 'swap-then-look', 'Choose a valid Queen rule.');
@@ -350,7 +366,7 @@ export function applyAction(game: Game, id: string, action: Action, now = Date.n
       ensure(power && (power.step === 'own' || power.step === 'other' || power.step === 'received'), 'There is no card to peek at now.');
       if (power.step !== 'received') ensure(power.step === 'own' ? action.target.playerId === id : action.target.playerId !== id, power.step === 'own' ? 'Choose one of your cards.' : 'Choose another player’s card.');
       const { card } = targetCard(game, action.target, false);
-      if (power.step === 'received') ensure(power.received?.some(r => r.target.playerId === action.target.playerId && r.target.slot === action.target.slot && r.card.rank === card.rank && r.card.suit === card.suit), 'Choose one of the cards you received in this swap. That card may have moved.');
+      if (power.step === 'received') ensure(power.received?.some(r => r.target.playerId === action.target.playerId && r.target.slot === action.target.slot && samePhysicalCard(r.card, card)), 'Choose one of the cards you received in this swap. That card may have moved.');
       power.reveals.push({ target: action.target, card });
       power.step = power.rank === 13 && power.step === 'own' ? 'other' : 'view';
     } else if (action.type === 'close-peek') {
@@ -425,11 +441,11 @@ export function viewFor(game: Game, id: string, now = Date.now()) {
       hand: p.hand.map((card, slot) => {
         if (!card) return null;
         const initial = game.phase === 'peek' && (slot === 2 || slot === 3) && (p.initialCards?.[slot - 2] ?? p.initial) === 'viewing';
-        const powerPeek = game.power?.reveals.some(r => r.target.playerId === p.id && r.target.slot === slot && r.card.rank === card.rank && r.card.suit === card.suit) ?? false;
+        const powerPeek = game.power?.reveals.some(r => r.target.playerId === p.id && r.target.slot === slot && samePhysicalCard(r.card, card)) ?? false;
         const peeking = isActive && powerPeek;
         // Publish only who is looking at this position. Card faces stay private.
         const peekedBy = initial ? p.id : powerPeek ? game.players[game.active]?.id ?? null : null;
-        const flash = game.flash && game.flash.until > now && game.flash.target.playerId === p.id && game.flash.target.slot === slot && game.flash.card.rank === card.rank && game.flash.card.suit === card.suit;
+        const flash = game.flash && game.flash.until > now && game.flash.target.playerId === p.id && game.flash.target.slot === slot && samePhysicalCard(game.flash.card, card);
         // Power reveals are separate snapshots: target movements cannot silently reveal a new card.
         return { face: game.phase === 'finished' || (initial && p.id === id) || flash || peeking ? card : null, peeking, peekedBy };
       }),
@@ -447,14 +463,14 @@ export function viewFor(game: Game, id: string, now = Date.now()) {
     power: power ? { rank: power.rank, step: power.step, reveals: power.reveals,
       received: (power.received ?? []).filter(r => {
         const card = game.players.find(p => p.id === r.target.playerId)?.hand[r.target.slot];
-        return card?.rank === r.card.rank && card?.suit === r.card.suit;
+        return !!card && samePhysicalCard(card, r.card);
       }).map(r => r.target),
     } : null,
     activePower: game.power?.rank ?? null,
     transfer: game.transfer, exhausted: game.exhausted, serverTime: now,
     lastSwap: game.lastSwap ?? null,
     motions: game.motions ?? [],
-    queenRule: game.queenRule ?? 'look-then-swap',
+    queenRule: game.queenRule ?? 'look-then-swap', decks: game.decks ?? 1,
     session: sessionScoreView(game),
   };
 }

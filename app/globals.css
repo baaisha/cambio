@@ -355,3 +355,9 @@ kbd { font-family: inherit; font-size: 10px; font-weight: 500; line-height: 1; p
 .next-game-seats { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 20px; margin: 20px 0; color: var(--muted); font-size: 13px; }
 .next-game-seats > span:first-child { font-weight: 600; }
 .next-game-seats button { margin-left: 10px; }
+
+.room-settings { text-align: left; }
+.room-settings .queen-settings + .queen-settings { margin-top: 18px; }
+.room-rules-hint { display: block; margin-top: 8px; color: var(--muted); font-size: 11px; }
+.results .room-settings { max-width: 430px; margin: 0 auto 25px; }
+.results .room-settings .queen-settings { margin: 18px 0 0; }

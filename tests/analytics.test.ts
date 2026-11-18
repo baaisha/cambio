@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { newGame, addPlayer, applyAction, finishIfDue } from '../lib/game.ts';
 import { ANALYTICS_PREFIX, completedGame, analyticsStatements, exportAnalytics, type AnalyticsStatement } from '../lib/analytics.ts';
 
-function result() {
-  const game = newGame('AB12', 'a', 'Private name'); addPlayer(game, 'b', 'Other name');
+function result(decks: 1 | 2 = 1) {
+  const game = newGame('AB12', 'a', 'Private name'); game.decks = decks; addPlayer(game, 'b', 'Other name');
   for (const p of game.players) applyAction(game, p.id, { type: 'ready' }, 1000);
   applyAction(game, 'a', { type: 'start' }, 1000);
   game.players[0].hand = [{ rank: 13, suit: 'hearts' }]; game.players[1].hand = [{ rank: 0, suit: 'joker' }];
@@ -15,7 +15,7 @@ function result() {
 }
 function database() {
   const db = new DatabaseSync(':memory:');
-  db.exec(readFileSync(new URL('../migrations/0001_game_analytics.sql', import.meta.url), 'utf8'));
+  for (const file of readdirSync(new URL('../migrations/', import.meta.url)).filter(f => f.endsWith('.sql')).sort()) db.exec(readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
   const write = async (statements: AnalyticsStatement[]) => {
     db.exec('BEGIN');
     try { for (const s of statements) db.prepare(s.sql).run(...s.params); db.exec('COMMIT'); }
@@ -40,15 +40,20 @@ test('D1 schema and SQL preserve signed scores, prevent duplicate counts and cor
   const { db, write } = database();
   try {
     const first = completedGame(result(), 'room-one', { a: 'browser:stable-hash' })!;
-    const second = completedGame(result(), 'room-two', { a: 'browser:stable-hash' })!;
+    const second = completedGame(result(2), 'room-two', { a: 'browser:stable-hash' })!;
     await write(await analyticsStatements(first)); await write(await analyticsStatements(first));
     assert.equal(db.prepare('SELECT count(*) AS n FROM games').get()!.n, 1);
     assert.equal(db.prepare('SELECT count(*) AS n FROM game_players').get()!.n, 2);
     assert.equal(db.prepare('SELECT sum(points) AS n FROM game_players').get()!.n, -1);
     await write(await analyticsStatements(second));
+    assert.equal(db.prepare("SELECT decks FROM games WHERE room_id='room-one'").get()!.decks, 1);
+    assert.equal(db.prepare("SELECT decks FROM games WHERE room_id='room-two'").get()!.decks, 2);
     assert.equal(db.prepare("SELECT count(DISTINCT player_id) AS n FROM game_players WHERE identity_kind='browser'").get()!.n, 1);
     assert.equal(db.prepare("SELECT count(DISTINCT player_id) AS n FROM game_players WHERE identity_kind='room'").get()!.n, 2);
     assert.equal(db.prepare('SELECT sum(won) AS n FROM game_players').get()!.n, 2);
+    const legacy = JSON.parse(JSON.stringify(first)); delete legacy.decks; legacy.gameId = 'legacy-game';
+    await write(await analyticsStatements(legacy));
+    assert.equal(db.prepare("SELECT decks FROM games WHERE game_id='legacy-game'").get()!.decks, 1);
     const ids = db.prepare('SELECT player_id FROM game_players').all();
     assert.ok(ids.every(row => /^[a-f0-9]{64}$/.test(String(row.player_id))));
     const invalid = await analyticsStatements({ ...first, gameId: 'invalid', playerCount: 1 });

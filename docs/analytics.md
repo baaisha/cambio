@@ -6,7 +6,7 @@ Recording begins with games completed after this deployment. We do not invent hi
 
 ## Stored data
 
-- `games`: opaque game/room IDs, game number, start/end timestamps in Unix milliseconds, player count, turn count, Queen rule, and database insertion time.
+- `games`: opaque game/room IDs, game number, start/end timestamps in Unix milliseconds, player count, turn count, deck count, Queen rule, and database insertion time.
 - `game_players`: one result per participating seat, pseudonymous player ID, identity kind, signed points, outright-win flag, and tied-win flag.
 - No names, room codes, IP addresses, authentication/guest tokens, cards, or peeks are stored in D1. Spectators and newly promoted next-game players are excluded from the game they watched.
 
