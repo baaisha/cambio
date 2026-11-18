@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handPosition, handViewport, tableLayout, resultTitle, turnTitle, matchActivity } from '../lib/table-layout.ts';
+import { opponentsForViewer, handPosition, handViewport, tableLayout, resultTitle, turnTitle, matchActivity } from '../lib/table-layout.ts';
 
 test('desktop seats remain within the table and separate with large hands, for 2–10 players', () => {
   for (const width of [1024, 1280, 1440, 1920]) for (const height of [640, 768, 900, 1080]) for (let n = 1; n <= 9; n++) {
@@ -54,4 +54,30 @@ test('rapid matching activity distinguishes the actor, owner, slot, penalties, a
   assert.equal(matchActivity({ ...event, kind: 'penalty' }, players), 'Alex missed Sam’s #4 · penalty card');
   assert.equal(matchActivity({ ...event, moves: [{ from: { playerId: 'a', slot: 1 }, to: 'discard' }] }, players), 'Alex matched their own #2');
   assert.equal(matchActivity({ ...event, kind: 'give', moves: [{ from: { playerId: 'a', slot: 0 }, to: { playerId: 'b', slot: 3 } }] }, players), 'Alex gave #1 to Sam’s #4');
+});
+
+test('every viewer sees the same cyclic turn order, with their next player first on the left', () => {
+  for (let count = 2; count <= 10; count++) {
+    const players = Array.from({ length: count }, (_, i) => ({ id: String(i) }));
+    const original = [...players];
+    for (let viewer = 0; viewer < count; viewer++) {
+      const opponents = opponentsForViewer(players, players[viewer].id);
+      assert.deepEqual(opponents.map(p => p.id), Array.from({ length: count - 1 }, (_, i) => String((viewer + i + 1) % count)));
+    }
+    assert.deepEqual(players, original);
+    assert.deepEqual(opponentsForViewer(players), players.slice(1), 'spectators anchor on the first player');
+  }
+  assert.deepEqual(opponentsForViewer([]), []);
+});
+test('large-room side seats follow a clockwise perimeter rather than alternating across the table', () => {
+  for (const opponents of [6, 7, 8, 9]) {
+    const layout = tableLayout(opponents, 1200, 800);
+    const left = layout.seats.filter(s => s.y > 16 && s.x < 600);
+    const top = layout.seats.filter(s => s.y === 16);
+    const right = layout.seats.filter(s => s.y > 16 && s.x > 600);
+    assert.deepEqual(layout.seats, [...left, ...top, ...right]);
+    assert.ok(left.every((s, i) => i === 0 || s.y < left[i - 1].y));
+    assert.ok(top.every((s, i) => i === 0 || s.x > top[i - 1].x));
+    assert.ok(right.every((s, i) => i === 0 || s.y > right[i - 1].y));
+  }
 });

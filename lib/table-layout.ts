@@ -15,6 +15,13 @@ export function handViewport(slots: number, cardWidth: number, gap: number, cap:
   return { base, total, visible, left: opposite ? base - visible : 0, canvas: opposite ? total - base : 0, origin: (opposite ? visible - base / 2 : base / 2) + 10 };
 }
 
+/** Next player appears to your left; roster and card slots keep their server identities. */
+export function opponentsForViewer<T extends { id: string }>(players: readonly T[], viewerId?: string): T[] {
+  if (!players.length) return [];
+  const index = Math.max(0, players.findIndex(p => p.id === viewerId));
+  return [...players.slice(index + 1), ...players.slice(0, index)];
+}
+
 /** Seat geometry depends on the table, never on changing hand sizes. */
 export function tableLayout(opponents: number, width: number, height: number) {
   const crowded = opponents >= 6;
@@ -34,7 +41,9 @@ export function tableLayout(opponents: number, width: number, height: number) {
     return { x: opponents === 1 ? width / 2 : margin + (width - 2 * margin) * (t + 1) / 2,
       y: 16 + (opponents <= 2 ? 65 : opponents === 3 ? 100 : 120) * Math.abs(t) ** 1.7, tilt: t * 18, cap };
   });
-  return { crowded, cardWidth, cardHeight, ownWidth, ownHeight, ownCap, seats };
+  // Large tables add side seats. Walk up the left side, across the top, then down the right.
+  const clockwise = crowded ? [7, 5, 0, 1, 2, 3, 4, 6, 8].filter(i => i < seats.length).map(i => seats[i]) : seats;
+  return { crowded, cardWidth, cardHeight, ownWidth, ownHeight, ownCap, seats: clockwise };
 }
 
 export function resultTitle(winners: string[], names: { id: string; name: string }[]) {

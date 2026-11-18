@@ -6,7 +6,7 @@ import { animateMotion, animateSwap } from '@/lib/swap-animation';
 import { browserGuestToken } from '@/lib/browser-identity';
 import { GameTransport, type GameRoute } from '@/lib/game-transport';
 import { normalizeRoomCode, validRoomCode } from '@/lib/room-code';
-import { handColumns, handPosition, handViewport, tableLayout, resultTitle, turnTitle, matchActivity } from '@/lib/table-layout';
+import { opponentsForViewer, handColumns, handPosition, handViewport, tableLayout, resultTitle, turnTitle, matchActivity } from '@/lib/table-layout';
 
 type Seat = { code: string; playerId: string; token: string };
 type Connection = 'connecting' | 'connected' | 'reconnecting' | 'closed';
@@ -400,6 +400,7 @@ export default function Home() {
   const spectating = state?.yourRole === 'spectator';
   const watcher = state?.spectators?.find(p => p.id === seat?.playerId);
   const perspective = me ?? state?.players[0];
+  const opponents = opponentsForViewer(state?.players ?? [], perspective?.id);
   const active = state?.players.find(p => p.id === state.activeId);
   const isTurn = !!state && state.activeId === me?.id;
   const online = connection === 'connected';
@@ -525,7 +526,6 @@ export default function Home() {
     const mine = player.id === me?.id;
     const isActive = state?.activeId === player.id && state?.phase === 'playing';
     const protectedHand = state?.calledBy === player.id;
-    const opponents = state!.players.filter(p => p.id !== perspective?.id);
     const arcIndex = opponents.findIndex(p => p.id === player.id);
     const seat = layout.seats[arcIndex];
     const cardWidth = own ? layout.ownWidth : layout.cardWidth, cardHeight = own ? layout.ownHeight : layout.cardHeight;
@@ -587,7 +587,7 @@ export default function Home() {
       : <main className="game-layout">
         <div className="table-toolbar"><div className="room-meta"><span className="private-label"><Icon name="lock" size={12}/> Private table</span><button className="room-code-button" onClick={copyInvite}>{formatCode(state.code)}<Icon name={copied ? 'check' : 'copy'} size={13}/></button></div><div className="game-meta"><span>Game {state.gameNumber}</span><span className="meta-dot">·</span><span>{state.phase === 'peek' ? 'Opening look' : state.phase === 'ending' ? 'Final matches' : state.calledBy ? `${state.finalTurns} final ${state.finalTurns === 1 ? 'turn' : 'turns'}` : `Round ${Math.floor(state.turns / state.players.length) + 1}`}</span>{endGameButton}</div></div>
         <div ref={boardRef} className={`card-table ${dealing ? 'dealing' : ''} ${layout.crowded ? 'crowded-table' : ''}`}>
-          <div className={`opponents opponents-${Math.min(state.players.length - 1, 5)}`}>{state.players.filter(p => p.id !== perspective?.id).map((p, i) => hand(p, false, i))}</div>
+          <div className={`opponents opponents-${Math.min(state.players.length - 1, 5)}`}>{opponents.map(p => hand(p, false, state.players.findIndex(seat => seat.id === p.id)))}</div>
           <div className="table-middle">
             <div className="pile-area">
               <div className="pile">
